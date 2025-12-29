@@ -93,9 +93,17 @@ if tech_summary['signals']:
     st.sidebar.markdown("### ⚠️ DETECTED SIGNALS")
     for sig in tech_summary['signals']:
         if "Bullish" in sig or "Positive" in sig or "Oversold" in sig:
-            st.sidebar.success(sig)
+            st.sidebar.markdown(f"""
+                <div style="background-color: rgba(0, 255, 0, 0.2); border: 1px solid #00ff00; padding: 10px; border-radius: 5px; margin-bottom: 5px; color: #e6edf3;">
+                    {sig}
+                </div>
+            """, unsafe_allow_html=True)
         elif "Bearish" in sig or "Negative" in sig or "Overbought" in sig:
-            st.sidebar.error(sig)
+            st.sidebar.markdown(f"""
+                <div style="background-color: rgba(255, 0, 0, 0.2); border: 1px solid #ff4444; padding: 10px; border-radius: 5px; margin-bottom: 5px; color: #e6edf3;">
+                    {sig}
+                </div>
+            """, unsafe_allow_html=True)
         else:
             st.sidebar.info(sig)
 

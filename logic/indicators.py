@@ -311,9 +311,17 @@ class QuantLogic:
             sentiment = "NEUTRAL ⚖️"
             color = "gray"
             
+        # Remove duplicates while preserving order
+        unique_signals = []
+        seen = set()
+        for s in signals:
+            if s not in seen:
+                unique_signals.append(s)
+                seen.add(s)
+
         return {
             "sentiment": sentiment,
             "score": score,
-            "signals": signals,
+            "signals": unique_signals,
             "color": color
         }
