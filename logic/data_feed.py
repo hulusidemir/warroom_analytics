@@ -3,6 +3,15 @@ import pandas as pd
 import streamlit as st
 import requests
 
+@st.cache_data(ttl=86400)
+def get_all_coins_list_v2():
+    """Fetches the full list of coins from CoinGecko (Cached for 24h)."""
+    # No try-except here to prevent caching failures (empty lists)
+    # If this fails, it raises an exception, and Streamlit won't cache the result.
+    resp = requests.get("https://api.coingecko.com/api/v3/coins/list", timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
 class DataFeed:
     def __init__(self):
         # Proxy Configuration for Streamlit Cloud (US Region Block Fix)
@@ -30,7 +39,7 @@ class DataFeed:
             self.exchange.load_markets()
         except Exception as e:
             if "451" in str(e) or "Service unavailable" in str(e):
-                st.error("⚠️ **ERİŞİM ENGELİ (GEO-BLOCK):** Streamlit Cloud sunucuları ABD'de olduğu için Binance verilerine erişemiyor. Çözüm için 'Secrets' ayarlarına bir Proxy ekleyin.")
+                st.error("⚠️ **ACCESS DENIED (GEO-BLOCK):** Streamlit Cloud servers are in the US, where Binance is restricted. Please configure a Proxy in 'Secrets'.")
             else:
                 st.error(f"System Init Failure: Could not load Binance markets. {e}")
 
@@ -46,7 +55,7 @@ class DataFeed:
             self.bybit.load_markets()
         except Exception as e:
             if "403" in str(e) or "Forbidden" in str(e):
-                st.warning("⚠️ ByBit erişimi de kısıtlı (ABD Sunucusu).")
+                st.warning("⚠️ ByBit access restricted (US Server).")
             else:
                 st.error(f"System Init Failure: Could not load ByBit markets. {e}")
 
@@ -287,50 +296,79 @@ class DataFeed:
             st.error(f"Symbol Load Error: {e}")
             return []
 
+    def _make_request(self, url, params=None):
+        """Helper to make requests with retries."""
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(max_retries=3)
+        session.mount('https://', adapter)
+        
+        try:
+            resp = session.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            raise e
+
     @st.cache_data(ttl=3600) # Cache for 1 hour
     def fetch_fundamental_data(_self, symbol):
         """Fetches fundamental data from CoinGecko."""
+        # Note: We raise exceptions here so Streamlit DOES NOT cache the failure (None).
+        # The caller (main.py) should handle the exception.
+        
+        base_symbol = symbol.split('/')[0].lower()
+        
+        # 1. Search for Coin ID
+        search_url = "https://api.coingecko.com/api/v3/search"
+        # We use a direct request here or use the helper? Helper is better.
+        # But _make_request is an instance method, and this is a cached method which might be static-like?
+        # _self is the instance.
+        
         try:
-            base_symbol = symbol.split('/')[0].lower()
-            
-            # 1. Search for Coin ID
-            search_url = "https://api.coingecko.com/api/v3/search"
-            resp = requests.get(search_url, params={'query': base_symbol})
-            data = resp.json()
-            
-            coin_id = None
-            for coin in data.get('coins', []):
-                if coin['symbol'].lower() == base_symbol:
-                    coin_id = coin['id']
-                    break
-            
-            if not coin_id and data.get('coins'):
-                coin_id = data['coins'][0]['id']
-                
-            if not coin_id:
-                return None
+            data = _self._make_request(search_url, params={'query': base_symbol})
+        except Exception:
+            # If search fails, we might still try the fallback list?
+            data = {}
+        
+        coin_id = None
+        for coin in data.get('coins', []):
+            if coin['symbol'].lower() == base_symbol:
+                coin_id = coin['id']
+                break
+        
+        # If search didn't find an exact match, try the full list
+        if not coin_id:
+            try:
+                all_coins = get_all_coins_list_v2()
+            except Exception:
+                all_coins = []
 
-            # 2. Fetch Details
-            details_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
-            params = {
-                'localization': 'false',
-                'tickers': 'false',
-                'market_data': 'true',
-                'community_data': 'false',
-                'developer_data': 'false',
-                'sparkline': 'false'
-            }
-            resp = requests.get(details_url, params=params)
+            matches = [c for c in all_coins if c['symbol'].lower() == base_symbol]
             
-            if resp.status_code != 200:
-                return None
-                
-            details = resp.json()
-            
-            if 'market_data' not in details:
-                return None
-            
-            return details
-        except Exception as e:
-            # st.error(f"Fundamental Data Error: {e}")
-            return None
+            if matches:
+                # Heuristic: Prefer exact name match if possible
+                exact_name_match = next((c for c in matches if c['name'].lower() == base_symbol), None)
+                if exact_name_match:
+                    coin_id = exact_name_match['id']
+                else:
+                    coin_id = matches[0]['id']
+
+        if not coin_id:
+            raise Exception(f"Coin ID not found for {base_symbol}")
+
+        # 2. Fetch Details
+        details_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+        params = {
+            'localization': 'false',
+            'tickers': 'false',
+            'market_data': 'true',
+            'community_data': 'false',
+            'developer_data': 'false',
+            'sparkline': 'false'
+        }
+        
+        details = _self._make_request(details_url, params=params)
+        
+        if 'market_data' not in details:
+            raise Exception("No market data in response")
+        
+        return details

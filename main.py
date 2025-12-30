@@ -46,8 +46,17 @@ st.sidebar.markdown("### ⚙️ CONFIGURATION")
 available_symbols = feed.get_symbols()
 if not available_symbols:
     available_symbols = ["BTC/USDT"]
-default_index = available_symbols.index("BTC/USDT") if "BTC/USDT" in available_symbols else 0
-symbol = st.sidebar.selectbox("TICKER", available_symbols, index=default_index)
+
+# Add placeholder to the beginning
+available_symbols.insert(0, "--- SELECT ---")
+
+symbol = st.sidebar.selectbox("TICKER", available_symbols, index=0)
+
+if symbol == "--- SELECT ---":
+    st.info("👈 Please select a ticker from the sidebar to initialize the War Room.")
+    # Clear any existing placeholders if necessary or just stop
+    st.stop()
+
 timeframe = st.sidebar.selectbox("TIMEFRAME", ["5m", "15m", "1h", "4h"], index=1)
 refresh_rate = st.sidebar.slider("REFRESH (sec)", 10, 60, 30)
 if st.sidebar.button("FORCE REFRESH", use_container_width=True):
@@ -263,7 +272,12 @@ with dashboard.container():
     """, unsafe_allow_html=True)
 
     # --- FUNDAMENTAL INTELLIGENCE ---
-    fund_data = feed.fetch_fundamental_data(symbol)
+    try:
+        fund_data = feed.fetch_fundamental_data(symbol)
+    except Exception as e:
+        fund_data = None
+        st.warning(f"⚠️ **CoinGecko Data Unavailable:** Could not fetch fundamental data for {symbol}. (Error: {e})")
+
     if fund_data:
         st.markdown("---")
         f1, f2, f3 = st.columns([1, 1, 2])
