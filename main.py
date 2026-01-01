@@ -245,38 +245,21 @@ with dashboard.container():
         # Custom BTC Macro Card
         btc_price = macro_data.get('price', 0)
         btc_change = macro_data.get('change', 0)
-        btc_d = macro_data.get('btc_d', 0)
-        usdt_d = macro_data.get('usdt_d', 0)
-        btc_d_change = macro_data.get('btc_d_change', 0)
-        usdt_d_change = macro_data.get('usdt_d_change', 0)
         
         btc_color = "#00ff00" if btc_change >= 0 else "#ff0000"
-        btc_d_color = "#00ff00" if btc_d_change >= 0 else "#ff0000"
-        usdt_d_color = "#00ff00" if usdt_d_change >= 0 else "#ff0000"
         
         st.markdown(f"""
     <div class="metric-card" style="display: flex; align-items: center;">
-    <div style="flex: 1; border-right: 1px solid #30363d; padding-right: 10px;">
+    <div style="flex: 1; padding-right: 10px;">
     <div style="color: #8b949e; font-size: 0.8rem;">BTC PRICE</div>
     <div style="font-size: 1.2rem; font-weight: 700; color: #e6edf3;">${btc_price:,.0f}</div>
     <div style="color: {btc_color}; font-size: 0.8rem;">{btc_change:+.2f}%</div>
     </div>
-    <div style="flex: 1; padding-left: 10px;">
-    <div style="color: #8b949e; font-size: 0.8rem;">DOMINANCE (24h)</div>
-    <div style="margin-top: 2px;">
-    <div style="margin-bottom: 2px;"><span style="color: #f7931a; font-weight: 600;">BTC.D:</span> <span style="color: #e6edf3;">{btc_d:.1f}%</span> <span style="color: {btc_d_color}; font-size: 0.7rem;">({btc_d_change:+.2f}%)</span></div>
-    <div><span style="color: #26a17b; font-weight: 600;">USDT.D:</span> <span style="color: #e6edf3;">{usdt_d:.1f}%</span> <span style="color: {usdt_d_color}; font-size: 0.7rem;">({usdt_d_change:+.2f}%)</span></div>
-    </div>
-    </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # --- FUNDAMENTAL INTELLIGENCE ---
-    try:
-        fund_data = feed.fetch_fundamental_data(symbol)
-    except Exception as e:
-        fund_data = None
-        st.warning(f"⚠️ **CoinGecko Data Unavailable:** Could not fetch fundamental data for {symbol}. (Error: {e})")
+    # --- FUNDAMENTAL INTELLIGENCE (REMOVED) ---
+    fund_data = None
 
     if fund_data:
         st.markdown("---")

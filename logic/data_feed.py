@@ -6,11 +6,8 @@ import requests
 @st.cache_data(ttl=86400)
 def get_all_coins_list_v2():
     """Fetches the full list of coins from CoinGecko (Cached for 24h)."""
-    # No try-except here to prevent caching failures (empty lists)
-    # If this fails, it raises an exception, and Streamlit won't cache the result.
-    resp = requests.get("https://api.coingecko.com/api/v3/coins/list", timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    # DEPRECATED: CoinGecko removed.
+    return []
 
 class DataFeed:
     def __init__(self):
@@ -223,48 +220,14 @@ class DataFeed:
             except:
                 pass
 
-            # 2. Fetch Global Data from CoinGecko
+            # 2. Fetch Global Data from CoinGecko (REMOVED)
             btc_d = 0
             usdt_d = 0
             btc_d_change = 0
             usdt_d_change = 0
             
-            try:
-                # A. Global Data
-                resp = requests.get("https://api.coingecko.com/api/v3/global")
-                data = resp.json().get('data', {})
-                market_cap_pct = data.get('market_cap_percentage', {})
-                btc_d = market_cap_pct.get('btc', 0)
-                usdt_d = market_cap_pct.get('usdt', 0)
-                total_cap_change = data.get('market_cap_change_percentage_24h_usd', 0)
-                
-                # B. Individual Coin Data for Dominance Change Calculation
-                # We need market_cap_change_percentage_24h for BTC and USDT
-                coins_resp = requests.get("https://api.coingecko.com/api/v3/coins/markets", params={
-                    'vs_currency': 'usd',
-                    'ids': 'bitcoin,tether'
-                })
-                coins_data = coins_resp.json()
-                
-                btc_cap_change = 0
-                usdt_cap_change = 0
-                
-                for coin in coins_data:
-                    if coin['id'] == 'bitcoin':
-                        btc_cap_change = coin.get('market_cap_change_percentage_24h', 0)
-                    elif coin['id'] == 'tether':
-                        usdt_cap_change = coin.get('market_cap_change_percentage_24h', 0)
-                
-                # C. Calculate Dominance Change
-                # Formula: ((1 + coin_change/100) / (1 + total_change/100) - 1) * 100
-                if total_cap_change is not None:
-                    if btc_cap_change is not None:
-                        btc_d_change = ((1 + btc_cap_change/100) / (1 + total_cap_change/100) - 1) * 100
-                    if usdt_cap_change is not None:
-                        usdt_d_change = ((1 + usdt_cap_change/100) / (1 + total_cap_change/100) - 1) * 100
-                        
-            except Exception as e:
-                print(f"Macro Data Error: {e}")
+            # CoinGecko dependency removed as per user request.
+            # Dominance data is not readily available via standard exchange APIs without aggregation.
                 
             return {
                 'price': btc_price,
@@ -312,63 +275,5 @@ class DataFeed:
     @st.cache_data(ttl=3600) # Cache for 1 hour
     def fetch_fundamental_data(_self, symbol):
         """Fetches fundamental data from CoinGecko."""
-        # Note: We raise exceptions here so Streamlit DOES NOT cache the failure (None).
-        # The caller (main.py) should handle the exception.
-        
-        base_symbol = symbol.split('/')[0].lower()
-        
-        # 1. Search for Coin ID
-        search_url = "https://api.coingecko.com/api/v3/search"
-        # We use a direct request here or use the helper? Helper is better.
-        # But _make_request is an instance method, and this is a cached method which might be static-like?
-        # _self is the instance.
-        
-        try:
-            data = _self._make_request(search_url, params={'query': base_symbol})
-        except Exception:
-            # If search fails, we might still try the fallback list?
-            data = {}
-        
-        coin_id = None
-        for coin in data.get('coins', []):
-            if coin['symbol'].lower() == base_symbol:
-                coin_id = coin['id']
-                break
-        
-        # If search didn't find an exact match, try the full list
-        if not coin_id:
-            try:
-                all_coins = get_all_coins_list_v2()
-            except Exception:
-                all_coins = []
-
-            matches = [c for c in all_coins if c['symbol'].lower() == base_symbol]
-            
-            if matches:
-                # Heuristic: Prefer exact name match if possible
-                exact_name_match = next((c for c in matches if c['name'].lower() == base_symbol), None)
-                if exact_name_match:
-                    coin_id = exact_name_match['id']
-                else:
-                    coin_id = matches[0]['id']
-
-        if not coin_id:
-            raise Exception(f"Coin ID not found for {base_symbol}")
-
-        # 2. Fetch Details
-        details_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
-        params = {
-            'localization': 'false',
-            'tickers': 'false',
-            'market_data': 'true',
-            'community_data': 'false',
-            'developer_data': 'false',
-            'sparkline': 'false'
-        }
-        
-        details = _self._make_request(details_url, params=params)
-        
-        if 'market_data' not in details:
-            raise Exception("No market data in response")
-        
-        return details
+        # DEPRECATED: CoinGecko removed.
+        return None
