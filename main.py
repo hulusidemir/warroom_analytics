@@ -6,6 +6,132 @@ from logic.indicators import QuantLogic
 import time
 import datetime
 
+# --- LANGUAGE SETTINGS ---
+if 'language' not in st.session_state:
+    st.session_state['language'] = 'tr'
+
+TRANSLATIONS = {
+    "en": {
+        "config": "⚙️ CONFIGURATION",
+        "ticker": "TICKER",
+        "select_ticker": "--- SELECT ---",
+        "select_msg": "👈 Please select a ticker from the sidebar to initialize the War Room.",
+        "timeframe": "TIMEFRAME",
+        "refresh": "REFRESH (sec)",
+        "force_refresh": "FORCE REFRESH",
+        "logs": "📡 LOGS",
+        "analyzing": "Analyzing...",
+        "init_protocol": "Initializing War Room Protocol...",
+        "accessing_feeds": "Accessing Exchange Feeds...",
+        "fetch_fail": "Failed to fetch data. Check ticker or API connection.",
+        "regime": "REGIME",
+        "pattern": "PATTERN",
+        "detected_signals": "### ⚠️ DETECTED SIGNALS",
+        "price": "PRICE",
+        "open_interest": "OPEN INTEREST",
+        "funding_rates": "FUNDING RATES",
+        "btc_price": "BTC PRICE",
+        "market_data": "MARKET DATA",
+        "rank": "Rank",
+        "mcap": "M. Cap",
+        "ath_atl": "ATH / ATL",
+        "profile": "PROFILE",
+        "view_desc": "▶ View Asset Description",
+        "market_regime": "### 🛡️ MARKET REGIME",
+        "quant_analysis": "### 🧠 QUANTITATIVE ANALYSIS",
+        "signal_matrix": "SIGNAL MATRIX",
+        "price_action": "PRICE ACTION + VWAP",
+        "cvd": "CUMULATIVE VOLUME DELTA (CVD)",
+        "oi": "OPEN INTEREST (OI)",
+        "regime_long_buildup": "Long Buildup 🟢",
+        "regime_short_covering": "Short Covering 👻",
+        "regime_short_buildup": "Short Buildup 🔴",
+        "regime_long_liq": "Long Liq 🩸",
+        "regime_strong_long_buildup": "Strong Long Buildup 🟢🔥",
+        "regime_absorption_long_buildup": "Absorption Long Buildup 🟢🛡️",
+        "regime_short_covering_agg": "Short Covering 👻🔥",
+        "regime_short_covering_pass": "Passive Short Covering 👻🛡️",
+        "regime_strong_short_buildup": "Strong Short Buildup 🔴🔥",
+        "regime_absorption_short_buildup": "Absorption Short Buildup 🔴🛡️",
+        "regime_long_liq_agg": "Long Liquidation 🩸🔥",
+        "regime_long_liq_pass": "Passive Long Liquidation 🩸🛡️",
+        "regime_neutral": "Neutral",
+        "regime_strong_long_buildup_desc": "Aggressive buyers are entering, driving price up. Healthy uptrend. (Price ⬆️, OI ⬆️, CVD ⬆️)",
+        "regime_absorption_long_buildup_desc": "Aggressive sellers are present (CVD down), but passive buyers (limit orders) are absorbing the selling pressure. Hidden bullish signal. (Price ⬆️, OI ⬆️, CVD ⬇️)",
+        "regime_short_covering_agg_desc": "Short positions are closing via aggressive market buy orders. (Price ⬆️, OI ⬇️, CVD ⬆️)",
+        "regime_short_covering_pass_desc": "Short positions are closing via limit orders, or price is rising despite aggressive selling. (Price ⬆️, OI ⬇️, CVD ⬇️)",
+        "regime_strong_short_buildup_desc": "Aggressive sellers are entering, driving price down. Healthy downtrend. (Price ⬇️, OI ⬆️, CVD ⬇️)",
+        "regime_absorption_short_buildup_desc": "Aggressive buyers are present, but passive sellers (walls) are absorbing the buying pressure. (Price ⬇️, OI ⬆️, CVD ⬆️)",
+        "regime_long_liq_agg_desc": "Long positions are closing via aggressive sells or stop-losses being triggered. (Price ⬇️, OI ⬇️, CVD ⬇️)",
+        "regime_long_liq_pass_desc": "Longs are closing, but there is also aggressive buying (or closing via limit sells). (Price ⬇️, OI ⬇️, CVD ⬆️)",
+        "regime_neutral_desc": "No clear trend or significant order flow imbalance detected.",
+        "sfp_bullish": "Bullish SFP 🚀",
+        "sfp_bearish": "Bearish SFP 🔻",
+        "none": "None"
+    },
+    "tr": {
+        "config": "⚙️ AYARLAR",
+        "ticker": "SEMBOL",
+        "select_ticker": "--- SEÇİNİZ ---",
+        "select_msg": "👈 War Room'u başlatmak için lütfen sol menüden bir sembol seçin.",
+        "timeframe": "ZAMAN DİLİMİ",
+        "refresh": "YENİLEME (sn)",
+        "force_refresh": "ZORLA YENİLE",
+        "logs": "📡 KAYITLAR",
+        "analyzing": "Analiz ediliyor...",
+        "init_protocol": "War Room Protokolü Başlatılıyor...",
+        "accessing_feeds": "Borsa Verilerine Erişiliyor...",
+        "fetch_fail": "Veri alınamadı. Sembolü veya API bağlantısını kontrol edin.",
+        "regime": "REJİM",
+        "pattern": "FORMASYON",
+        "detected_signals": "### ⚠️ TESPİT EDİLEN SİNYALLER",
+        "price": "FİYAT",
+        "open_interest": "AÇIK POZİSYON (OI)",
+        "funding_rates": "FONLAMA ORANLARI",
+        "btc_price": "BTC FİYATI",
+        "market_data": "PİYASA VERİLERİ",
+        "rank": "Sıra",
+        "mcap": "Piyasa Değeri",
+        "ath_atl": "EN YÜKSEK / EN DÜŞÜK",
+        "profile": "PROFİL",
+        "view_desc": "▶ Varlık Açıklamasını Görüntüle",
+        "market_regime": "### 🛡️ PİYASA REJİMİ",
+        "quant_analysis": "### 🧠 KANTİTATİF ANALİZ",
+        "signal_matrix": "SİNYAL MATRİSİ",
+        "price_action": "FİYAT HAREKETİ + VWAP",
+        "cvd": "KÜMÜLATİF HACİM DELTASI (CVD)",
+        "oi": "AÇIK POZİSYON (OI)",
+        "regime_long_buildup": "Long Toplama 🟢",
+        "regime_short_covering": "Short Kapama 👻",
+        "regime_short_buildup": "Short Toplama 🔴",
+        "regime_long_liq": "Long Tasfiye 🩸",
+        "regime_strong_long_buildup": "Güçlü Long Toplama 🟢🔥",
+        "regime_absorption_long_buildup": "Absorbe Long Toplama 🟢🛡️",
+        "regime_short_covering_agg": "Short Kapama 👻🔥",
+        "regime_short_covering_pass": "Pasif Short Kapama 👻🛡️",
+        "regime_strong_short_buildup": "Güçlü Short Toplama 🔴🔥",
+        "regime_absorption_short_buildup": "Absorbe Short Toplama 🔴🛡️",
+        "regime_long_liq_agg": "Long Tasfiye 🩸🔥",
+        "regime_long_liq_pass": "Pasif Long Tasfiye 🩸🛡️",
+        "regime_neutral": "Nötr",
+        "regime_strong_long_buildup_desc": "Agresif alıcılar piyasaya giriyor ve fiyatı yukarı sürüyor. En sağlıklı yükseliş sinyali. (Fiyat ⬆️, OI ⬆️, CVD ⬆️)",
+        "regime_absorption_long_buildup_desc": "Agresif satıcılar var (CVD düşüyor) ama pasif alıcılar (limit emirler) bu satışı karşılıyor. Gizli bir boğa sinyali. (Fiyat ⬆️, OI ⬆️, CVD ⬇️)",
+        "regime_short_covering_agg_desc": "Short pozisyonlar agresif market buy emirleriyle kapatılıyor. (Fiyat ⬆️, OI ⬇️, CVD ⬆️)",
+        "regime_short_covering_pass_desc": "Short pozisyonlar limit emirlerle kapatılıyor veya agresif satışa rağmen fiyat yükseliyor. (Fiyat ⬆️, OI ⬇️, CVD ⬇️)",
+        "regime_strong_short_buildup_desc": "Agresif satıcılar piyasaya giriyor ve fiyatı aşağı baskılıyor. En sağlıklı düşüş sinyali. (Fiyat ⬇️, OI ⬆️, CVD ⬇️)",
+        "regime_absorption_short_buildup_desc": "Agresif alıcılar var ama pasif satıcılar (duvarlar) bu alışı karşılıyor ve fiyat düşüyor. (Fiyat ⬇️, OI ⬆️, CVD ⬆️)",
+        "regime_long_liq_agg_desc": "Long pozisyonlar agresif satışlarla veya stop patlatarak kapanıyor. (Fiyat ⬇️, OI ⬇️, CVD ⬇️)",
+        "regime_long_liq_pass_desc": "Longlar kapanıyor ama agresif alımlar da var (veya limit satışlarla kapanış). (Fiyat ⬇️, OI ⬇️, CVD ⬆️)",
+        "regime_neutral_desc": "Belirgin bir trend veya emir akışı dengesizliği tespit edilemedi.",
+        "sfp_bullish": "Boğa SFP 🚀",
+        "sfp_bearish": "Ayı SFP 🔻",
+        "none": "Yok"
+    }
+}
+
+def t(key):
+    return TRANSLATIONS[st.session_state['language']].get(key, key)
+
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="WAR ROOM: HFT ANALYTICS",
@@ -20,6 +146,10 @@ st.markdown("""
     .stApp {background-color: #0e1117;}
     .metric-card {background-color: #161b22; padding: 10px; border-radius: 5px; border: 1px solid #30363d;}
     h1, h2, h3 {color: #e6edf3;}
+    /* Cursor Hand for Selectbox */
+    div[data-baseweb="select"] > div {
+        cursor: pointer !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -42,28 +172,53 @@ st.sidebar.markdown("""
     </div>
     """, unsafe_allow_html=True)
 
-st.sidebar.markdown("### ⚙️ CONFIGURATION")
+# Language Selection
+c1, c2 = st.sidebar.columns(2)
+if c1.button("🇺🇸 EN", use_container_width=True):
+    st.session_state['language'] = 'en'
+    st.rerun()
+if c2.button("🇹🇷 TR", use_container_width=True):
+    st.session_state['language'] = 'tr'
+    st.rerun()
+
+st.sidebar.markdown(f"### {t('config')}")
 available_symbols = feed.get_symbols()
 if not available_symbols:
     available_symbols = ["BTC/USDT"]
 
+# Create a mapping for display (Show only Base Asset, e.g., BTC, ETH, SOL)
+# available_symbols is already sorted by Volume from get_symbols()
+symbol_map = {s.split('/')[0]: s for s in available_symbols}
+display_options = list(symbol_map.keys())
+# display_options.sort() # Removed to preserve Volume ranking
+
 # Add placeholder to the beginning
-available_symbols.insert(0, "--- SELECT ---")
+display_options.insert(0, t('select_ticker'))
 
-symbol = st.sidebar.selectbox("TICKER", available_symbols, index=0)
+selected_display = st.sidebar.selectbox(t('ticker'), display_options, index=0, key="symbol_selector")
 
-if symbol == "--- SELECT ---":
-    st.info("👈 Please select a ticker from the sidebar to initialize the War Room.")
+if selected_display == t('select_ticker'):
+    st.info(t('select_msg'))
     # Clear any existing placeholders if necessary or just stop
     st.stop()
 
-timeframe = st.sidebar.selectbox("TIMEFRAME", ["5m", "15m", "1h", "4h"], index=1)
-refresh_rate = st.sidebar.slider("REFRESH (sec)", 10, 60, 30)
-if st.sidebar.button("FORCE REFRESH", use_container_width=True):
+# Resolve back to full symbol
+symbol = symbol_map[selected_display]
+
+timeframe = st.sidebar.selectbox(t('timeframe'), ["5m", "15m", "1h", "4h"], index=1)
+refresh_rate = st.sidebar.slider(t('refresh'), 10, 60, 60)
+
+# Indicator Toggles
+st.sidebar.markdown("### 📈 INDICATORS")
+show_bb = st.sidebar.checkbox("Bollinger Bands", value=False)
+show_ichimoku = st.sidebar.checkbox("Ichimoku Cloud", value=False)
+show_psar = st.sidebar.checkbox("Parabolic SAR", value=False)
+
+if st.sidebar.button(t('force_refresh'), use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📡 LOGS")
+st.sidebar.subheader(t('logs'))
 
 # Placeholders for immediate clearing of old data
 regime_container = st.sidebar.empty()
@@ -72,22 +227,22 @@ signals_title_container = st.sidebar.empty()
 signals_container = st.sidebar.empty()
 
 # Clear/Loading state
-regime_container.info("Analyzing...")
+regime_container.info(t('analyzing'))
 sfp_container.empty()
 signals_title_container.empty()
 signals_container.empty()
 
 # --- MAIN DASHBOARD CONTAINER ---
 dashboard = st.empty()
-dashboard.info("Initializing War Room Protocol...")
+dashboard.info(t('init_protocol'))
 
 # --- MAIN DATA FETCH ---
-with st.spinner('Accessing Exchange Feeds...'):
+with st.spinner(t('accessing_feeds')):
     df, funding_data = feed.fetch_market_data(symbol, timeframe)
     macro_data = feed.get_macro_context(timeframe)
 
 if df.empty:
-    st.error("Failed to fetch data. Check ticker or API connection.")
+    st.error(t('fetch_fail'))
     st.stop()
 
 # --- RENDER DASHBOARD ---
@@ -105,6 +260,11 @@ with dashboard.container():
     df = logic.calculate_bollinger_bands(df)
     df = logic.calculate_macd(df)
     df = logic.calculate_stoch_rsi(df)
+    
+    if show_ichimoku:
+        df = logic.calculate_ichimoku(df)
+    if show_psar:
+        df = logic.calculate_parabolic_sar(df)
 
     # Generate Technical Summary
     tech_summary = logic.generate_technical_summary(df)
@@ -112,19 +272,44 @@ with dashboard.container():
     # Current Candle Stats
     last_close = df['close'].iloc[-1]
     last_open = df['open'].iloc[-1]
-    last_regime = df['regime'].iloc[-1]
-    last_sfp = df['sfp_signal'].iloc[-1] if df['sfp_signal'].iloc[-1] else "None"
+    
+    # Translate Regime and SFP
+    raw_regime = df['regime'].iloc[-1]
+    raw_sfp = df['sfp_signal'].iloc[-1] if df['sfp_signal'].iloc[-1] else "None"
+    
+    regime_map = {
+        'Strong Long Buildup 🟢🔥': 'regime_strong_long_buildup',
+        'Absorption Long Buildup 🟢🛡️': 'regime_absorption_long_buildup',
+        'Short Covering 👻🔥': 'regime_short_covering_agg',
+        'Passive Short Covering 👻🛡️': 'regime_short_covering_pass',
+        'Strong Short Buildup 🔴🔥': 'regime_strong_short_buildup',
+        'Absorption Short Buildup 🔴🛡️': 'regime_absorption_short_buildup',
+        'Long Liquidation 🩸🔥': 'regime_long_liq_agg',
+        'Passive Long Liquidation 🩸🛡️': 'regime_long_liq_pass',
+        'Neutral': 'regime_neutral'
+    }
+    sfp_map = {
+        'Bullish SFP 🚀': 'sfp_bullish',
+        'Bearish SFP 🔻': 'sfp_bearish',
+        'None': 'none'
+    }
+    
+    regime_key = regime_map.get(raw_regime, 'regime_neutral')
+    last_regime = t(regime_key)
+    regime_desc = t(f"{regime_key}_desc")
+    
+    last_sfp = t(sfp_map.get(raw_sfp, 'none'))
 
     # --- SIDEBAR LOGS UPDATE ---
-    regime_container.info(f"REGIME: {last_regime}")
-    if last_sfp != "None":
-        sfp_container.warning(f"PATTERN: {last_sfp}")
+    regime_container.info(f"{t('regime')}: {last_regime}")
+    if raw_sfp != "None":
+        sfp_container.warning(f"{t('pattern')}: {last_sfp}")
     else:
         sfp_container.empty()
 
     # Display Signals in Sidebar
     if tech_summary['signals']:
-        signals_title_container.markdown("### ⚠️ DETECTED SIGNALS")
+        signals_title_container.markdown(t('detected_signals'))
         
         # Build the HTML string for all signals
         signals_html = ""
@@ -197,7 +382,7 @@ with dashboard.container():
         
         st.markdown(f"""
         <div class="metric-card">
-            <div style="color: #8b949e; font-size: 0.8rem;">PRICE</div>
+            <div style="color: #8b949e; font-size: 0.8rem;">{t('price')}</div>
             <div style="font-size: 1.5rem; font-weight: 700; color: #e6edf3;">
                 ${last_close:,.2f}
             </div>
@@ -214,7 +399,7 @@ with dashboard.container():
         
         st.markdown(f"""
     <div class="metric-card">
-    <div style="color: #8b949e; font-size: 0.8rem;">OPEN INTEREST</div>
+    <div style="color: #8b949e; font-size: 0.8rem;">{t('open_interest')}</div>
     <div style="margin-top: 5px;">
     <div style="margin-bottom: 2px;"><span style="color: #e6edf3; font-weight: 600;">Binance:</span> ${int(last_oi):,} <span style="color: {bin_color}; font-size: 0.8rem;">({oi_delta_pct:+.2f}%)</span></div>
     <div><span style="color: #e6edf3; font-weight: 600;">Bybit:</span> ${int(last_oi_bybit):,} <span style="color: {byb_color}; font-size: 0.8rem;">({oi_bybit_delta_pct:+.2f}%)</span></div>
@@ -229,7 +414,7 @@ with dashboard.container():
 
         st.markdown(f"""
     <div class="metric-card">
-    <div style="color: #8b949e; font-size: 0.8rem;">FUNDING RATES</div>
+    <div style="color: #8b949e; font-size: 0.8rem;">{t('funding_rates')}</div>
     <div style="margin-top: 5px;">
     <div style="margin-bottom: 2px;">
     <span style="color: #e6edf3; font-weight: 600;">Binance:</span> <span style="color: {bin_f_color}">{binance_funding * 100:.4f}%</span> <span style="color: #8b949e; font-size: 0.8rem;">({binance_countdown})</span>
@@ -246,15 +431,27 @@ with dashboard.container():
         btc_price = macro_data.get('price', 0)
         btc_change = macro_data.get('change', 0)
         
+        btc_d = macro_data.get('btc_d', 0)
+        eth_d = macro_data.get('eth_d', 0)
+        usdt_d = macro_data.get('usdt_d', 0)
+        
         btc_color = "#00ff00" if btc_change >= 0 else "#ff0000"
         
         st.markdown(f"""
-    <div class="metric-card" style="display: flex; align-items: center;">
-    <div style="flex: 1; padding-right: 10px;">
-    <div style="color: #8b949e; font-size: 0.8rem;">BTC PRICE</div>
-    <div style="font-size: 1.2rem; font-weight: 700; color: #e6edf3;">${btc_price:,.0f}</div>
-    <div style="color: {btc_color}; font-size: 0.8rem;">{btc_change:+.2f}%</div>
-    </div>
+    <div class="metric-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+            <div>
+                <div style="color: #8b949e; font-size: 0.8rem;">{t('btc_price')}</div>
+                <div style="font-size: 1.1rem; font-weight: 700; color: #e6edf3;">${btc_price:,.0f}</div>
+                <div style="color: {btc_color}; font-size: 0.8rem;">{btc_change:+.2f}%</div>
+            </div>
+            <div style="text-align: right;">
+                <div style="color: #8b949e; font-size: 0.7rem;">DOMINANCE</div>
+                <div style="font-size: 0.8rem; color: #e6edf3;"><span style="color: #f7931a; font-weight: bold;">BTC.D:</span> {btc_d:.1f}%</div>
+                <div style="font-size: 0.8rem; color: #e6edf3;"><span style="color: #627eea; font-weight: bold;">ETH.D:</span> {eth_d:.1f}%</div>
+                <div style="font-size: 0.8rem; color: #e6edf3;"><span style="color: #26a17b; font-weight: bold;">USDT.D:</span> {usdt_d:.1f}%</div>
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -294,10 +491,10 @@ with dashboard.container():
         with f1:
             st.markdown(f"""
     <div class="metric-card">
-    <div style="color: #8b949e; font-size: 0.8rem;">MARKET DATA</div>
+    <div style="color: #8b949e; font-size: 0.8rem;">{t('market_data')}</div>
     <div style="margin-top: 5px;">
-    <div style="margin-bottom: 2px;"><span style="color: #e6edf3; font-weight: 600;">Rank:</span> #{rank}</div>
-    <div><span style="color: #e6edf3; font-weight: 600;">M. Cap:</span> ${mcap:,.0f}</div>
+    <div style="margin-bottom: 2px;"><span style="color: #e6edf3; font-weight: 600;">{t('rank')}:</span> #{rank}</div>
+    <div><span style="color: #e6edf3; font-weight: 600;">{t('mcap')}:</span> ${mcap:,.0f}</div>
     </div>
     </div>
     """, unsafe_allow_html=True)
@@ -305,7 +502,7 @@ with dashboard.container():
         with f2:
             st.markdown(f"""
     <div class="metric-card">
-    <div style="color: #8b949e; font-size: 0.8rem;">ATH / ATL</div>
+    <div style="color: #8b949e; font-size: 0.8rem;">{t('ath_atl')}</div>
     <div style="margin-top: 5px;">
     <div style="margin-bottom: 4px;">
     <span style="color: #ff4444; font-weight: 600;">ATH:</span> ${ath:,.2f} <span style="font-size: 0.8rem;">({ath_change:.1f}%)</span> <span style="font-size: 0.7rem; color: #6e7681;">{ath_date}</span>
@@ -320,14 +517,14 @@ with dashboard.container():
         with f3:
             st.markdown(f"""
             <div class="metric-card">
-                <div style="color: #8b949e; font-size: 0.8rem;">PROFILE: {fund_data.get('name')}</div>
+                <div style="color: #8b949e; font-size: 0.8rem;">{t('profile')}: {fund_data.get('name')}</div>
                 <div style="margin-top: 5px; font-size: 0.9rem; color: #e6edf3;">
                     <span style="color: #00e5ff;">{categories}</span>
                 </div>
                 <div style="margin-top: 8px; border-top: 1px solid #30363d; padding-top: 8px;">
                     <details>
                         <summary style="color: #8b949e; font-size: 0.8rem; cursor: pointer; outline: none; user-select: none;">
-                            <span style="border-bottom: 1px dashed #8b949e;">▶ View Asset Description</span>
+                            <span style="border-bottom: 1px dashed #8b949e;">{t('view_desc')}</span>
                         </summary>
                         <div style="margin-top: 10px; font-size: 0.85rem; color: #c9d1d9; line-height: 1.6; max-height: 250px; overflow-y: auto; padding-right: 5px; text-align: justify;">
                             {clean_desc}
@@ -338,7 +535,7 @@ with dashboard.container():
             """, unsafe_allow_html=True)
 
     # Market Regime Row
-    st.markdown(f"### 🛡️ MARKET REGIME: {last_regime}")
+    st.markdown(f"{t('market_regime')}: {last_regime}", help=regime_desc)
 
     # --- WAR ROOM CHARTS ---
     # We use Plotly Subplots: Main Price, CVD, OI
@@ -347,7 +544,7 @@ with dashboard.container():
         shared_xaxes=True, 
         vertical_spacing=0.03, 
         row_heights=[0.6, 0.2, 0.2],
-        subplot_titles=(f"{symbol} PRICE ACTION + VWAP", "CUMULATIVE VOLUME DELTA (CVD)", "OPEN INTEREST (OI)")
+        subplot_titles=(f"{symbol} {t('price_action')}", t('cvd'), t('oi'))
     )
 
     # 1. Price Chart (Candles)
@@ -362,13 +559,43 @@ with dashboard.container():
     ), row=1, col=1)
 
     # Bollinger Bands
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['bb_upper'], mode='lines', name='BB Upper', line=dict(color='gray', width=1, dash='dash')
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['bb_lower'], mode='lines', name='BB Lower', line=dict(color='gray', width=1, dash='dash'),
-        fill='tonexty'
-    ), row=1, col=1)
+    if show_bb:
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['bb_upper'], mode='lines', name='BB Upper', line=dict(color='gray', width=1, dash='dash')
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['bb_lower'], mode='lines', name='BB Lower', line=dict(color='gray', width=1, dash='dash'),
+            fill='tonexty'
+        ), row=1, col=1)
+
+    # Ichimoku Cloud
+    if show_ichimoku:
+        # Tenkan & Kijun
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['tenkan_sen'], mode='lines', name='Tenkan-sen', line=dict(color='#0496ff', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['kijun_sen'], mode='lines', name='Kijun-sen', line=dict(color='#991515', width=1)), row=1, col=1)
+        
+        # Cloud (Senkou A & B) - We need to fill between them. 
+        # Plotly fills to the next y trace, so order matters or use fill='tonexty'
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['senkou_span_a'], mode='lines', name='Senkou A', 
+            line=dict(color='rgba(0, 255, 0, 0.3)', width=0), showlegend=False
+        ), row=1, col=1)
+        
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['senkou_span_b'], mode='lines', name='Cloud', 
+            line=dict(color='rgba(255, 0, 0, 0.3)', width=0), 
+            fill='tonexty', fillcolor='rgba(255, 255, 255, 0.1)' # Generic fill, color depends on A vs B usually but simple fill here
+        ), row=1, col=1)
+        
+        # Chikou Span
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['chikou_span'], mode='lines', name='Chikou Span', line=dict(color='rgba(255, 255, 255, 0.5)', width=1, dash='dot')), row=1, col=1)
+
+    # Parabolic SAR
+    if show_psar:
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['psar'], mode='markers', name='Parabolic SAR',
+            marker=dict(color='white', size=2)
+        ), row=1, col=1)
 
     # SFP Markers
     sfp_data = df[df['sfp_signal'].notna()]
@@ -413,7 +640,7 @@ with dashboard.container():
     st.plotly_chart(fig, use_container_width=True)
 
     # --- TECHNICAL SUMMARY ---
-    st.markdown("### 🧠 QUANTITATIVE ANALYSIS")
+    st.markdown(t('quant_analysis'))
     t1, t2 = st.columns(2)
 
     with t1:
@@ -449,7 +676,7 @@ with dashboard.container():
 
         st.markdown(f"""
     <div class="metric-card">
-    <h4 style="margin-bottom: 15px;">SIGNAL MATRIX</h4>
+    <h4 style="margin-bottom: 15px;">{t('signal_matrix')}</h4>
     <!-- RSI -->
     <div style="margin-bottom: 10px;">
     <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #8b949e; margin-bottom: 2px;">

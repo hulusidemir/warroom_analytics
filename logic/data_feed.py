@@ -9,6 +9,35 @@ def get_all_coins_list_v2():
     # DEPRECATED: CoinGecko removed.
     return []
 
+@st.cache_data(ttl=3600)
+def fetch_symbols_sorted_by_volume(proxies=None):
+    """Fetches and sorts symbols by volume, cached for 1 hour."""
+    try:
+        exchange = ccxt.binanceusdm({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'future'},
+            'proxies': proxies or {}
+        })
+        exchange.load_markets()
+        tickers = exchange.fetch_tickers()
+        
+        symbol_vol_list = []
+        for symbol, ticker in tickers.items():
+            if symbol not in exchange.markets: continue
+            market = exchange.markets[symbol]
+            if not market.get('active', True): continue
+            if market.get('quote') != 'USDT': continue
+            if not market.get('swap'): continue
+            
+            vol = ticker.get('quoteVolume', 0)
+            if vol is None: vol = 0
+            symbol_vol_list.append((symbol, vol))
+            
+        symbol_vol_list.sort(key=lambda x: x[1], reverse=True)
+        return [s[0] for s in symbol_vol_list]
+    except Exception as e:
+        return []
+
 class DataFeed:
     def __init__(self):
         # Proxy Configuration for Streamlit Cloud (US Region Block Fix)
@@ -222,41 +251,63 @@ class DataFeed:
 
             # 2. Fetch Global Data from CoinGecko (REMOVED)
             btc_d = 0
+            eth_d = 0
             usdt_d = 0
             btc_d_change = 0
+            eth_d_change = 0
             usdt_d_change = 0
             
-            # CoinGecko dependency removed as per user request.
-            # Dominance data is not readily available via standard exchange APIs without aggregation.
+            # Try to fetch from CoinGecko Public API (No Auth)
+            try:
+                url = "https://api.coingecko.com/api/v3/global"
+                data = requests.get(url, timeout=2).json()
+                market_cap_pct = data['data']['market_cap_percentage']
+                
+                btc_d = market_cap_pct.get('btc', 0)
+                eth_d = market_cap_pct.get('eth', 0)
+                usdt_d = market_cap_pct.get('usdt', 0)
+                
+                # Change data is not directly available in this endpoint, setting to 0 or calculating if history available
+                # For now, we will just show the current value.
+            except:
+                pass
                 
             return {
                 'price': btc_price,
                 'change': btc_change,
                 'btc_d': btc_d,
+                'eth_d': eth_d,
                 'usdt_d': usdt_d,
                 'btc_d_change': btc_d_change,
+                'eth_d_change': eth_d_change,
                 'usdt_d_change': usdt_d_change
             }
         except:
-            return {'price': 0, 'change': 0, 'btc_d': 0, 'usdt_d': 0, 'btc_d_change': 0, 'usdt_d_change': 0}
+            return {
+                'price': 0, 'change': 0, 
+                'btc_d': 0, 'eth_d': 0, 'usdt_d': 0, 
+                'btc_d_change': 0, 'eth_d_change': 0, 'usdt_d_change': 0
+            }
 
     def get_symbols(self):
-        """Returns a list of active USDT perpetual symbols for selection."""
+        """Returns a list of active USDT perpetual symbols sorted by 24h Volume (Desc)."""
+        # Use the cached function to prevent API spam and timeouts
+        proxies = self.exchange.proxies if hasattr(self.exchange, 'proxies') else None
+        symbols = fetch_symbols_sorted_by_volume(proxies)
+        
+        if symbols:
+            return symbols
+            
+        # Fallback to basic list if tickers fail
         try:
             if not self.exchange.markets:
                 self.exchange.load_markets()
             symbols = []
             for market in self.exchange.markets.values():
-                if not market.get('active', True):
-                    continue
-                if market.get('quote') != 'USDT':
-                    continue
-                if not market.get('swap'):
-                    continue
-                symbols.append(market['symbol'])
-            return sorted(set(symbols))
-        except Exception as e:
-            st.error(f"Symbol Load Error: {e}")
+                if market.get('quote') == 'USDT' and market.get('swap') and market.get('active', True):
+                    symbols.append(market['symbol'])
+            return sorted(symbols)
+        except:
             return []
 
     def _make_request(self, url, params=None):

@@ -31,18 +31,39 @@ class QuantLogic:
     @staticmethod
     def identify_oi_regime(df):
         """
-        Classifies the market state based on Price and OI Delta.
+        Classifies the market state based on Price, OI Delta, and CVD (Delta).
         """
         df['price_change'] = df['close'].diff()
         df['oi_change'] = df['oi'].diff()
+        
+        # Ensure delta exists (it comes from calculate_cvd)
+        if 'delta' not in df.columns:
+            df['delta'] = 0
 
         conditions = [
-            (df['price_change'] > 0) & (df['oi_change'] > 0), # Long Buildup
-            (df['price_change'] > 0) & (df['oi_change'] < 0), # Short Covering
-            (df['price_change'] < 0) & (df['oi_change'] > 0), # Short Buildup
-            (df['price_change'] < 0) & (df['oi_change'] < 0)  # Long Liquidation
+            (df['price_change'] > 0) & (df['oi_change'] > 0) & (df['delta'] > 0), # Strong Long Buildup
+            (df['price_change'] > 0) & (df['oi_change'] > 0) & (df['delta'] <= 0), # Absorption Long Buildup
+            
+            (df['price_change'] > 0) & (df['oi_change'] < 0) & (df['delta'] > 0), # Short Covering (Aggressive)
+            (df['price_change'] > 0) & (df['oi_change'] < 0) & (df['delta'] <= 0), # Short Covering (Passive)
+            
+            (df['price_change'] < 0) & (df['oi_change'] > 0) & (df['delta'] < 0), # Strong Short Buildup
+            (df['price_change'] < 0) & (df['oi_change'] > 0) & (df['delta'] >= 0), # Absorption Short Buildup
+            
+            (df['price_change'] < 0) & (df['oi_change'] < 0) & (df['delta'] < 0), # Long Liquidation (Aggressive)
+            (df['price_change'] < 0) & (df['oi_change'] < 0) & (df['delta'] >= 0)  # Long Liquidation (Passive)
         ]
-        choices = ['Long Buildup 🟢', 'Short Covering 👻', 'Short Buildup 🔴', 'Long Liq 🩸']
+        
+        choices = [
+            'Strong Long Buildup 🟢🔥',
+            'Absorption Long Buildup 🟢🛡️',
+            'Short Covering 👻🔥',
+            'Passive Short Covering 👻🛡️',
+            'Strong Short Buildup 🔴🔥',
+            'Absorption Short Buildup 🔴🛡️',
+            'Long Liquidation 🩸🔥',
+            'Passive Long Liquidation 🩸🛡️'
+        ]
         
         df['regime'] = np.select(conditions, choices, default='Neutral')
         return df
@@ -154,6 +175,90 @@ class QuantLogic:
         stoch = ((rsi - min_rsi) / (max_rsi - min_rsi)) * 100
         df['stoch_k'] = stoch.rolling(window=smooth_k).mean()
         df['stoch_d'] = df['stoch_k'].rolling(window=smooth_d).mean()
+        return df
+
+    @staticmethod
+    def calculate_ichimoku(df):
+        """Ichimoku Cloud"""
+        # Tenkan-sen (Conversion Line): (9-period high + 9-period low) / 2
+        high_9 = df['high'].rolling(window=9).max()
+        low_9 = df['low'].rolling(window=9).min()
+        df['tenkan_sen'] = (high_9 + low_9) / 2
+
+        # Kijun-sen (Base Line): (26-period high + 26-period low) / 2
+        high_26 = df['high'].rolling(window=26).max()
+        low_26 = df['low'].rolling(window=26).min()
+        df['kijun_sen'] = (high_26 + low_26) / 2
+
+        # Senkou Span A (Leading Span A): (Conversion Line + Base Line) / 2
+        df['senkou_span_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(26)
+
+        # Senkou Span B (Leading Span B): (52-period high + 52-period low) / 2
+        high_52 = df['high'].rolling(window=52).max()
+        low_52 = df['low'].rolling(window=52).min()
+        df['senkou_span_b'] = ((high_52 + low_52) / 2).shift(26)
+
+        # Chikou Span (Lagging Span): Close shifted back 26 periods
+        df['chikou_span'] = df['close'].shift(-26)
+        
+        return df
+
+    @staticmethod
+    def calculate_parabolic_sar(df, af=0.02, max_af=0.2):
+        """Parabolic SAR"""
+        # Initialize columns
+        df['psar'] = df['close'][0]
+        df['psar_bull'] = True
+        df['af'] = af
+        df['ep'] = df['high'][0] # Extreme Point
+        
+        psar = df['close'][0]
+        bull = True
+        af_val = af
+        ep = df['high'][0]
+        
+        psar_values = [psar]
+        
+        # Iterative calculation (SAR is recursive)
+        for i in range(1, len(df)):
+            prev_psar = psar
+            prev_bull = bull
+            
+            # Calculate current SAR
+            psar = prev_psar + af_val * (ep - prev_psar)
+            
+            # Trend Switch Logic
+            if prev_bull:
+                if df['low'][i] < psar:
+                    bull = False
+                    psar = ep
+                    ep = df['low'][i]
+                    af_val = af
+                else:
+                    if df['high'][i] > ep:
+                        ep = df['high'][i]
+                        af_val = min(af_val + af, max_af)
+                    # SAR cannot be higher than previous two lows in uptrend
+                    if i > 1:
+                        psar = min(psar, df['low'][i-1], df['low'][i-2])
+                        
+            else: # Bearish
+                if df['high'][i] > psar:
+                    bull = True
+                    psar = ep
+                    ep = df['high'][i]
+                    af_val = af
+                else:
+                    if df['low'][i] < ep:
+                        ep = df['low'][i]
+                        af_val = min(af_val + af, max_af)
+                    # SAR cannot be lower than previous two highs in downtrend
+                    if i > 1:
+                        psar = max(psar, df['high'][i-1], df['high'][i-2])
+            
+            psar_values.append(psar)
+            
+        df['psar'] = psar_values
         return df
 
     @staticmethod
