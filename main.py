@@ -67,7 +67,8 @@ TRANSLATIONS = {
         "regime_neutral_desc": "No clear trend or significant order flow imbalance detected.",
         "sfp_bullish": "Bullish SFP 🚀",
         "sfp_bearish": "Bearish SFP 🔻",
-        "none": "None"
+        "none": "None",
+        "cvd_est_warn": "⚠️ CVD is ESTIMATED (Real Taker data unavailable for this exchange/symbol)."
     },
     "tr": {
         "config": "⚙️ AYARLAR",
@@ -125,7 +126,8 @@ TRANSLATIONS = {
         "regime_neutral_desc": "Belirgin bir trend veya emir akışı dengesizliği tespit edilemedi.",
         "sfp_bullish": "Boğa SFP 🚀",
         "sfp_bearish": "Ayı SFP 🔻",
-        "none": "Yok"
+        "none": "Yok",
+        "cvd_est_warn": "⚠️ CVD TAHMİNİDİR (Bu borsa/sembol için gerçek Taker verisi alınamadı)."
     }
 }
 
@@ -536,6 +538,10 @@ with dashboard.container():
 
     # Market Regime Row
     st.markdown(f"{t('market_regime')}: {last_regime}", help=regime_desc)
+
+    # CVD Estimation Warning
+    if df['is_cvd_estimated'].iloc[-1]:
+        st.warning(t('cvd_est_warn'))
 
     # --- WAR ROOM CHARTS ---
     # We use Plotly Subplots: Main Price, CVD, OI

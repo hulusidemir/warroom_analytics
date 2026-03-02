@@ -5,53 +5,87 @@ class QuantLogic:
     
     @staticmethod
     def calculate_vwap(df):
-        """Anchored VWAP (resets at start of DataFrame for this view)"""
-        v = df['volume'].values
-        tp = (df['high'] + df['low'] + df['close']) / 3
-        df['vwap'] = (tp * v).cumsum() / v.cumsum()
+        """Daily Anchored VWAP (Resets every day)"""
+        df['date'] = df['timestamp'].dt.date
+        
+        def calc_vwap_group(group):
+            v = group['volume']
+            tp = (group['high'] + group['low'] + group['close']) / 3
+            return (tp * v).cumsum() / v.cumsum()
+            
+        df['vwap'] = df.groupby('date', group_keys=False).apply(calc_vwap_group)
         return df
 
     @staticmethod
     def calculate_cvd(df):
         """
-        Calculates Precise Cumulative Volume Delta (CVD).
-        Formula: Delta = Buy_Aggressors - Sell_Aggressors
+        Calculates Precise Cumulative Volume Delta (CVD) anchored to the daily session.
+        If Taker Data is missing, CVD returns None.
         """
-        # 1. Derive Taker Sell Volume
+        if df['taker_buy_vol'].isnull().all():
+            df['cvd'] = 0
+            return df
+
+        df['taker_buy_vol'] = df['taker_buy_vol'].fillna(df['volume'] * 0.5) # Fallback to 50% only if sporadic missing data, but base logic prevents this.
         df['taker_sell_vol'] = df['volume'] - df['taker_buy_vol']
-        
-        # 2. Calculate Net Delta per candle
         df['delta'] = df['taker_buy_vol'] - df['taker_sell_vol']
         
-        # 3. Cumulative Sum for the CVD Line
-        df['cvd'] = df['delta'].cumsum()
+        # Session Anchored CVD (Reset at 00:00 UTC)
+        df['date'] = df['timestamp'].dt.date
         
+        def calc_cvd_group(group):
+            return group['delta'].cumsum()
+            
+        df['cvd'] = df.groupby('date', group_keys=False).apply(calc_cvd_group)
+        return df
+
+    @staticmethod
+    def calculate_atr(df, period=14):
+        """Average True Range for Volatility"""
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        df['atr'] = true_range.rolling(window=period).mean()
         return df
 
     @staticmethod
     def identify_oi_regime(df):
         """
         Classifies the market state based on Price, OI Delta, and CVD (Delta).
+        Uses ATR-based Dynamic Thresholds to filter noise.
         """
-        df['price_change'] = df['close'].diff()
-        df['oi_change'] = df['oi'].diff()
+        # Ensure ATR is calculated
+        if 'atr' not in df.columns:
+            df = QuantLogic.calculate_atr(df)
+            
+        # Calculate changes/deltas
+        df['price_change'] = df['close'] - df['open']
+        df['oi_change_pct'] = df['oi'].pct_change() * 100
         
-        # Ensure delta exists (it comes from calculate_cvd)
+        # Dynamic Threshold (0.5 * ATR for trend detection, prevents choppy regime switches)
+        df['bull_trend'] = df['price_change'] > (0.5 * df['atr'])
+        df['bear_trend'] = df['price_change'] < -(0.5 * df['atr'])
+        
+        # OI Threshold (At least 0.2% change to be considered institutional involvement)
+        oi_thresh = 0.2 
+        
         if 'delta' not in df.columns:
             df['delta'] = 0
 
         conditions = [
-            (df['price_change'] > 0) & (df['oi_change'] > 0) & (df['delta'] > 0), # Strong Long Buildup
-            (df['price_change'] > 0) & (df['oi_change'] > 0) & (df['delta'] <= 0), # Absorption Long Buildup
+            (df['bull_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['delta'] > 0), # Strong Long Buildup
+            (df['bull_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['delta'] <= 0), # Absorption Long Buildup
             
-            (df['price_change'] > 0) & (df['oi_change'] < 0) & (df['delta'] > 0), # Short Covering (Aggressive)
-            (df['price_change'] > 0) & (df['oi_change'] < 0) & (df['delta'] <= 0), # Short Covering (Passive)
+            (df['bull_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['delta'] > 0), # Short Covering (Aggressive)
+            (df['bull_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['delta'] <= 0), # Short Covering (Passive)
             
-            (df['price_change'] < 0) & (df['oi_change'] > 0) & (df['delta'] < 0), # Strong Short Buildup
-            (df['price_change'] < 0) & (df['oi_change'] > 0) & (df['delta'] >= 0), # Absorption Short Buildup
+            (df['bear_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['delta'] < 0), # Strong Short Buildup
+            (df['bear_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['delta'] >= 0), # Absorption Short Buildup
             
-            (df['price_change'] < 0) & (df['oi_change'] < 0) & (df['delta'] < 0), # Long Liquidation (Aggressive)
-            (df['price_change'] < 0) & (df['oi_change'] < 0) & (df['delta'] >= 0)  # Long Liquidation (Passive)
+            (df['bear_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['delta'] < 0), # Long Liquidation (Aggressive)
+            (df['bear_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['delta'] >= 0)  # Long Liquidation (Passive)
         ]
         
         choices = [
@@ -69,22 +103,30 @@ class QuantLogic:
         return df
 
     @staticmethod
-    def detect_sfp(df, window=5):
+    def detect_sfp(df):
         """
-        Swing Failure Pattern (Liquidity Hunt) Detector.
+        Real Liquidity Hunt Detector (SFP).
+        Calculates Prior Day High/Low (PDH/PDL) and detects sweeps.
         """
         df['sfp_signal'] = None
         
-        # Bullish SFP: Low breaks prev N-lows but closes above
-        rolling_min = df['low'].rolling(window=window).min().shift(1)
-        bull_sfp = (df['low'] < rolling_min) & (df['close'] > rolling_min)
+        # Group by day to find daily highs and lows
+        df['date'] = df['timestamp'].dt.date
+        daily_stats = df.groupby('date').agg({'high': 'max', 'low': 'min'}).reset_index()
+        daily_stats['PDH'] = daily_stats['high'].shift(1)  # Previous Day High
+        daily_stats['PDL'] = daily_stats['low'].shift(1)   # Previous Day Low
         
-        # Bearish SFP: High breaks prev N-highs but closes below
-        rolling_max = df['high'].rolling(window=window).max().shift(1)
-        bear_sfp = (df['high'] > rolling_max) & (df['close'] < rolling_max)
+        # Merge back to original dataframe on date
+        df = df.merge(daily_stats[['date', 'PDH', 'PDL']], on='date', how='left')
         
-        df.loc[bull_sfp, 'sfp_signal'] = 'Bullish SFP 🚀'
-        df.loc[bear_sfp, 'sfp_signal'] = 'Bearish SFP 🔻'
+        # Bullish SFP: Price wicks below PDL but closes above it
+        bull_sfp = (df['low'] < df['PDL']) & (df['close'] > df['PDL'])
+        
+        # Bearish SFP: Price wicks above PDH but closes below it
+        bear_sfp = (df['high'] > df['PDH']) & (df['close'] < df['PDH'])
+        
+        df.loc[bull_sfp, 'sfp_signal'] = 'Bullish SFP (PDL Sweep) 🚀'
+        df.loc[bear_sfp, 'sfp_signal'] = 'Bearish SFP (PDH Sweep) 🔻'
         
         return df
 
@@ -337,86 +379,94 @@ class QuantLogic:
     @staticmethod
     def generate_technical_summary(df):
         """
-        Generates a professional technical analysis summary based on calculated indicators.
-        Returns a dictionary with signal details and overall sentiment.
+        Generates a professional regime-filtered technical analysis summary.
+        Oscillators are ignored if they contradict the main trend (VWAP).
         """
         last = df.iloc[-1]
         signals = []
-        score = 0 # Positive = Bullish, Negative = Bearish
+        score = 0
         
-        # 0. Divergence Check
+        # 1. Primary Trend Filter (Anchor)
+        is_bull_trend = last['close'] > last['vwap']
+        is_bear_trend = last['close'] < last['vwap']
+        
+        if is_bull_trend:
+            signals.append("Price > VWAP (Primary Bull Trend)")
+            score += 2
+        else:
+            signals.append("Price < VWAP (Primary Bear Trend)")
+            score -= 2
+            
+        # 0. Divergence Check (Only trend-aligned divergences count)
         div_signals = QuantLogic.detect_divergences(df)
         for div in div_signals:
-            signals.append(div)
-            if "Bullish" in div: score += 2
-            if "Bearish" in div: score -= 2
+            if "Bullish" in div and is_bull_trend:
+                signals.append(f"{div} (Trend Aligned)")
+                score += 2
+            elif "Bearish" in div and is_bear_trend:
+                signals.append(f"{div} (Trend Aligned)")
+                score -= 2
+            else:
+                signals.append(f"{div} (Counter-Trend, Ignored)")
         
-        # 1. VWAP Analysis
-        if last['close'] > last['vwap']:
-            signals.append("Price > VWAP (Bullish Trend)")
-            score += 1
-        else:
-            signals.append("Price < VWAP (Bearish Trend)")
-            score -= 1
-            
-        # 2. RSI Analysis
-        if last['rsi'] < 30:
-            signals.append("RSI Oversold (Bullish Reversal Potential)")
+        # 2. RSI Analysis (Regime Filtered)
+        if last['rsi'] < 30 and is_bull_trend:
+            signals.append("RSI Oversold in Bull Trend (Pullback Long)")
             score += 2
-        elif last['rsi'] > 70:
-            signals.append("RSI Overbought (Bearish Reversal Potential)")
+        elif last['rsi'] > 70 and is_bear_trend:
+            signals.append("RSI Overbought in Bear Trend (Pullback Short)")
             score -= 2
+        # Ignored states: RSI > 70 in Bull Trend (expected), RSI < 30 in Bear Trend (expected)
         
         # 3. Money Flow (CMF)
         if last['cmf'] > 0.05:
-            signals.append("CMF Positive (Inflow)")
-            score += 1
+            signals.append("CMF Positive (Institutional Inflow)")
+            score += 1 if is_bull_trend else 0
         elif last['cmf'] < -0.05:
-            signals.append("CMF Negative (Outflow)")
-            score -= 1
+            signals.append("CMF Negative (Institutional Outflow)")
+            score -= 1 if is_bear_trend else 0
             
-        # 4. MACD
+        # 4. MACD Momentum
         if last['macd'] > last['macd_signal']:
-            signals.append("MACD Bullish Crossover")
-            score += 1
+            signals.append("MACD Bullish Momentum")
+            score += 1 if is_bull_trend else 0
         else:
-            signals.append("MACD Bearish Crossover")
+            signals.append("MACD Bearish Momentum")
+            score -= 1 if is_bear_trend else 0
+            
+        # 5. Bollinger Bands (Regime Filtered)
+        if last['close'] < last['bb_lower'] and is_bull_trend:
+            signals.append("Price at Lower BB in Bull Trend (Buy Zone)")
+            score += 1
+        elif last['close'] > last['bb_upper'] and is_bear_trend:
+            signals.append("Price at Upper BB in Bear Trend (Sell Zone)")
             score -= 1
             
-        # 5. Bollinger Bands
-        if last['close'] < last['bb_lower']:
-            signals.append("Price Below BB Lower (Oversold)")
+        # 6. Stochastic RSI (Regime Filtered)
+        if last['stoch_k'] < 20 and last['stoch_k'] > last['stoch_d'] and is_bull_trend:
+            signals.append("Stoch RSI Oversold Push in Bull Trend")
             score += 1
-        elif last['close'] > last['bb_upper']:
-            signals.append("Price Above BB Upper (Overbought)")
-            score -= 1
-            
-        # 6. Stochastic RSI
-        if last['stoch_k'] < 20 and last['stoch_k'] > last['stoch_d']:
-            signals.append("Stoch RSI Oversold & Crossing Up")
-            score += 1
-        elif last['stoch_k'] > 80 and last['stoch_k'] < last['stoch_d']:
-            signals.append("Stoch RSI Overbought & Crossing Down")
+        elif last['stoch_k'] > 80 and last['stoch_k'] < last['stoch_d'] and is_bear_trend:
+            signals.append("Stoch RSI Overbought Rejection in Bear Trend")
             score -= 1
 
         # Determine Overall Sentiment
-        if score >= 3:
+        if score >= 4:
             sentiment = "STRONG BULLISH 🚀"
             color = "green"
         elif score >= 1:
             sentiment = "BULLISH 🟢"
             color = "lightgreen"
-        elif score <= -3:
+        elif score <= -4:
             sentiment = "STRONG BEARISH 🩸"
             color = "red"
         elif score <= -1:
             sentiment = "BEARISH 🔴"
             color = "salmon"
         else:
-            sentiment = "NEUTRAL ⚖️"
+            sentiment = "NEUTRAL (CHOP) ⚖️"
             color = "gray"
             
-        # Remove duplicates while preserving order
         unique_signals = []
         seen = set()
         for s in signals:

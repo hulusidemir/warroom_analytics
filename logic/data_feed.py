@@ -111,6 +111,7 @@ class DataFeed:
             df = pd.DataFrame()
             funding_binance = {}
             funding_bybit = {}
+            is_cvd_estimated = False
 
             # --- 1. FETCH OHLCV & VOLUME ---
             fetch_success = False
@@ -138,6 +139,7 @@ class DataFeed:
                         })
                     df = pd.DataFrame(data)
                     fetch_success = True
+                    is_cvd_estimated = False
                 except Exception as e:
                     print(f"Binance fetch failed for {symbol}: {e}")
                     # Fallthrough to Bybit check
@@ -147,8 +149,6 @@ class DataFeed:
                 ohlcv = _self.bybit.fetch_ohlcv(bybit_symbol, timeframe, limit=limit)
                 data = []
                 for row in ohlcv:
-                    # Bybit doesn't provide Taker Buy Vol in standard OHLCV
-                    # We estimate it as 50% of volume to prevent CVD crash (Neutral)
                     vol = float(row[5])
                     data.append({
                         'timestamp': int(row[0]),
@@ -157,10 +157,11 @@ class DataFeed:
                         'low': float(row[3]),
                         'close': float(row[4]),
                         'volume': vol,
-                        'taker_buy_vol': vol * 0.5 
+                        'taker_buy_vol': None # Real Taker Vol info not in OHLCV, passing None to avoid corrupting CVD
                     })
                 df = pd.DataFrame(data)
                 fetch_success = True
+                is_cvd_estimated = True
             
             if not fetch_success:
                 st.error(f"Symbol {symbol} not found on Binance or Bybit.")
@@ -170,6 +171,7 @@ class DataFeed:
                 return pd.DataFrame(), {}
 
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df['is_cvd_estimated'] = is_cvd_estimated
 
             # --- 2. FETCH OPEN INTEREST ---
             
@@ -195,11 +197,10 @@ class DataFeed:
                     oi_bybit_df = pd.DataFrame(oi_bybit_data)
                     oi_bybit_df['timestamp'] = pd.to_datetime(oi_bybit_df['timestamp'], unit='ms')
                     oi_bybit_df = oi_bybit_df[['timestamp', 'openInterestAmount']]
-                    oi_bybit_df.rename(columns={'openInterestAmount': 'oi_bybit_amount'}, inplace=True)
+                    oi_bybit_df.rename(columns={'openInterestAmount': 'oi_bybit'}, inplace=True)
                     
                     df = pd.merge(df, oi_bybit_df, on='timestamp', how='left')
-                    df['oi_bybit_amount'] = df['oi_bybit_amount'].ffill()
-                    df['oi_bybit'] = df['oi_bybit_amount'] * df['close']
+                    df['oi_bybit'] = df['oi_bybit'].ffill()
                 except:
                     df['oi_bybit'] = 0
             else:
