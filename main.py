@@ -224,12 +224,14 @@ st.sidebar.subheader(t('logs'))
 
 # Placeholders for immediate clearing of old data
 regime_container = st.sidebar.empty()
+funding_pressure_container = st.sidebar.empty()
 sfp_container = st.sidebar.empty()
 signals_title_container = st.sidebar.empty()
 signals_container = st.sidebar.empty()
 
 # Clear/Loading state
 regime_container.info(t('analyzing'))
+funding_pressure_container.empty()
 sfp_container.empty()
 signals_title_container.empty()
 signals_container.empty()
@@ -250,8 +252,19 @@ if df.empty:
 # --- RENDER DASHBOARD ---
 with dashboard.container():
     # --- PROCESSING ---
+    # Parse Funding Data First
+    binance_data = funding_data.get('binance', {})
+    binance_funding = binance_data.get('fundingRate', 0)
+    bybit_data = funding_data.get('bybit', {})
+    bybit_funding = bybit_data.get('fundingRate', 0)
+    
     df = logic.calculate_vwap(df)
     df = logic.calculate_cvd(df)
+    df = logic.calculate_ema_trend(df)  # EMA trend for proper analysis
+    
+    # Add funding pressure before regime identification
+    df = logic.add_funding_pressure(df, binance_funding, bybit_funding)
+    
     df = logic.identify_oi_regime(df)
     df = logic.detect_sfp(df)
     # New Technical Indicators
@@ -275,9 +288,33 @@ with dashboard.container():
     last_close = df['close'].iloc[-1]
     last_open = df['open'].iloc[-1]
     
+    # Total OI Analysis (Critical for scalping)
+    last_oi = df['oi'].iloc[-1] if 'oi' in df.columns else 0
+    last_oi_bybit = df['oi_bybit'].iloc[-1] if 'oi_bybit' in df.columns else 0
+    total_oi = last_oi + last_oi_bybit
+    
+    # OI Distribution (which exchange has more exposure)
+    if total_oi > 0:
+        binance_oi_share = (last_oi / total_oi) * 100
+        bybit_oi_share = (last_oi_bybit / total_oi) * 100
+    else:
+        binance_oi_share = 50
+        bybit_oi_share = 50
+    
+    # OI Delta Calculations
+    prev_oi = df['oi'].iloc[-2] if 'oi' in df.columns and len(df) > 1 else last_oi
+    oi_delta_pct = ((last_oi - prev_oi) / prev_oi) * 100 if prev_oi != 0 else 0
+
+    prev_oi_bybit = df['oi_bybit'].iloc[-2] if 'oi_bybit' in df.columns and len(df) > 1 else last_oi_bybit
+    oi_bybit_delta_pct = ((last_oi_bybit - prev_oi_bybit) / prev_oi_bybit) * 100 if prev_oi_bybit != 0 else 0
+    
+    prev_total_oi = prev_oi + prev_oi_bybit
+    total_oi_delta_pct = ((total_oi - prev_total_oi) / prev_total_oi) * 100 if prev_total_oi != 0 else 0
+    
     # Translate Regime and SFP
     raw_regime = df['regime'].iloc[-1]
     raw_sfp = df['sfp_signal'].iloc[-1] if df['sfp_signal'].iloc[-1] else "None"
+    funding_pressure = df['funding_pressure'].iloc[-1] if 'funding_pressure' in df.columns else 'N/A'
     
     regime_map = {
         'Strong Long Buildup 🟢🔥': 'regime_strong_long_buildup',
@@ -304,6 +341,16 @@ with dashboard.container():
 
     # --- SIDEBAR LOGS UPDATE ---
     regime_container.info(f"{t('regime')}: {last_regime}")
+    
+    # Funding Pressure Display
+    if funding_pressure != 'Neutral' and funding_pressure != 'N/A':
+        if 'Squeeze Risk' in funding_pressure:
+            funding_pressure_container.warning(f"⚡ {funding_pressure}")
+        else:
+            funding_pressure_container.info(f"📊 {funding_pressure}")
+    else:
+        funding_pressure_container.empty()
+    
     if raw_sfp != "None":
         sfp_container.warning(f"{t('pattern')}: {last_sfp}")
     else:
@@ -354,10 +401,12 @@ with dashboard.container():
     binance_data = funding_data.get('binance', {})
     binance_funding = binance_data.get('fundingRate', 0)
     binance_next_funding_ts = binance_data.get('fundingTimestamp')
+    binance_interval = binance_data.get('fundingInterval', '8h')
 
     bybit_data = funding_data.get('bybit', {})
     bybit_funding = bybit_data.get('fundingRate', 0)
     bybit_next_funding_ts = bybit_data.get('fundingTimestamp')
+    bybit_interval = bybit_data.get('fundingInterval', '8h')
 
     # Calculate Countdown
     def get_countdown(ts):
@@ -395,16 +444,18 @@ with dashboard.container():
         """, unsafe_allow_html=True)
 
     with c2:
-        # Custom OI Card
+        # Custom OI Card - Enhanced with Total OI
         bin_color = "#00ff00" if oi_delta_pct >= 0 else "#ff0000"
         byb_color = "#00ff00" if oi_bybit_delta_pct >= 0 else "#ff0000"
+        total_color = "#00ff00" if total_oi_delta_pct >= 0 else "#ff0000"
         
         st.markdown(f"""
     <div class="metric-card">
     <div style="color: #8b949e; font-size: 0.8rem;">{t('open_interest')}</div>
     <div style="margin-top: 5px;">
-    <div style="margin-bottom: 2px;"><span style="color: #e6edf3; font-weight: 600;">Binance:</span> ${int(last_oi):,} <span style="color: {bin_color}; font-size: 0.8rem;">({oi_delta_pct:+.2f}%)</span></div>
-    <div><span style="color: #e6edf3; font-weight: 600;">Bybit:</span> ${int(last_oi_bybit):,} <span style="color: {byb_color}; font-size: 0.8rem;">({oi_bybit_delta_pct:+.2f}%)</span></div>
+    <div style="margin-bottom: 2px;"><span style="color: #e6edf3; font-weight: 700;">Total:</span> ${int(total_oi):,} <span style="color: {total_color}; font-size: 0.8rem; font-weight: 700;">({total_oi_delta_pct:+.2f}%)</span></div>
+    <div style="margin-bottom: 2px; font-size: 0.85rem;"><span style="color: #8b949e;">Binance ({binance_oi_share:.0f}%):</span> ${int(last_oi):,} <span style="color: {bin_color}; font-size: 0.75rem;">({oi_delta_pct:+.2f}%)</span></div>
+    <div style="font-size: 0.85rem;"><span style="color: #8b949e;">Bybit ({bybit_oi_share:.0f}%):</span> ${int(last_oi_bybit):,} <span style="color: {byb_color}; font-size: 0.75rem;">({oi_bybit_delta_pct:+.2f}%)</span></div>
     </div>
     </div>
     """, unsafe_allow_html=True)
@@ -419,10 +470,10 @@ with dashboard.container():
     <div style="color: #8b949e; font-size: 0.8rem;">{t('funding_rates')}</div>
     <div style="margin-top: 5px;">
     <div style="margin-bottom: 2px;">
-    <span style="color: #e6edf3; font-weight: 600;">Binance:</span> <span style="color: {bin_f_color}">{binance_funding * 100:.4f}%</span> <span style="color: #8b949e; font-size: 0.8rem;">({binance_countdown})</span>
+    <span style="color: #e6edf3; font-weight: 600;">Binance ({binance_interval}):</span> <span style="color: {bin_f_color}">{binance_funding * 100:.4f}%</span> <span style="color: #8b949e; font-size: 0.8rem;">({binance_countdown})</span>
     </div>
     <div>
-    <span style="color: #e6edf3; font-weight: 600;">Bybit:</span> <span style="color: {byb_f_color}">{bybit_funding * 100:.4f}%</span> <span style="color: #8b949e; font-size: 0.8rem;">({bybit_countdown})</span>
+    <span style="color: #e6edf3; font-weight: 600;">Bybit ({bybit_interval}):</span> <span style="color: {byb_f_color}">{bybit_funding * 100:.4f}%</span> <span style="color: #8b949e; font-size: 0.8rem;">({bybit_countdown})</span>
     </div>
     </div>
     </div>

@@ -52,6 +52,13 @@ class DataFeed:
         except Exception:
             pass # Ignore if secrets are not configured locally
 
+        self.coinalyze_api_key = None
+        try:
+            if "COINALYZE_API_KEY" in st.secrets:
+                self.coinalyze_api_key = st.secrets["COINALYZE_API_KEY"]
+        except Exception:
+            pass
+
         # Initialize the Binance USD-M Futures exchange
         self.exchange = ccxt.binanceusdm({
             'enableRateLimit': True,
@@ -85,11 +92,12 @@ class DataFeed:
             else:
                 st.error(f"System Init Failure: Could not load ByBit markets. {e}")
 
-    @st.cache_data(ttl=10)
+    @st.cache_data(ttl=3)
     def fetch_market_data(_self, symbol, timeframe='15m', limit=100):
         """
         Fetches OHLCV + Taker Buy Volume (Raw Kernel Access)
         Handles Binance (Primary) and Bybit (Secondary/Fallback)
+        TTL=3s for scalping precision
         """
         try:
             # Ensure markets are loaded
@@ -145,23 +153,59 @@ class DataFeed:
                     # Fallthrough to Bybit check
                 
             if not fetch_success and in_bybit:
-                # Fallback to Bybit
-                ohlcv = _self.bybit.fetch_ohlcv(bybit_symbol, timeframe, limit=limit)
-                data = []
-                for row in ohlcv:
-                    vol = float(row[5])
-                    data.append({
-                        'timestamp': int(row[0]),
-                        'open': float(row[1]),
-                        'high': float(row[2]),
-                        'low': float(row[3]),
-                        'close': float(row[4]),
-                        'volume': vol,
-                        'taker_buy_vol': None # Real Taker Vol info not in OHLCV, passing None to avoid corrupting CVD
-                    })
-                df = pd.DataFrame(data)
-                fetch_success = True
-                is_cvd_estimated = True
+                # Try Coinalyze for real Taker Volume (CVD) if API key available
+                if _self.coinalyze_api_key:
+                    try:
+                        interval_map = {'1m': '1minute', '5m': '5minute', '15m': '15minute', '30m': '30minute', '1h': '1hour', '2h': '2hour', '4h': '4hour', '6h': '6hour', '12h': '12hour', '1d': 'daily'}
+                        interval_str = interval_map.get(timeframe, '15minute')
+                        base = symbol.split('/')[0]
+                        quote = symbol.split('/')[1].split(':')[0]
+                        coinalyze_symbol = f"{base}{quote}_PERP.3"
+                        
+                        url = f"https://api.coinalyze.net/v1/ohlcv-history"
+                        params = {'symbols': coinalyze_symbol, 'interval': interval_str}
+                        headers = {'api_key': _self.coinalyze_api_key}
+                        
+                        res = requests.get(url, params=params, headers=headers, timeout=5)
+                        if res.status_code == 200:
+                            data_json = res.json()
+                            if data_json and len(data_json) > 0 and 'history' in data_json[0]:
+                                ohlcv_hist = data_json[0]['history']
+                                data = []
+                                for row in ohlcv_hist:
+                                    data.append({
+                                        'timestamp': int(row['t']) * 1000,
+                                        'open': float(row['o']),
+                                        'high': float(row['h']),
+                                        'low': float(row['l']),
+                                        'close': float(row['c']),
+                                        'volume': float(row['v']),
+                                        'taker_buy_vol': float(row.get('bv', float(row['v']) * 0.5))
+                                    })
+                                df = pd.DataFrame(data)
+                                fetch_success = True
+                                is_cvd_estimated = False
+                    except Exception as e:
+                        print(f"Coinalyze OHLCV fetch failed: {e}")
+
+                if not fetch_success:
+                    # Fallback to Bybit CCXT
+                    ohlcv = _self.bybit.fetch_ohlcv(bybit_symbol, timeframe, limit=limit)
+                    data = []
+                    for row in ohlcv:
+                        vol = float(row[5])
+                        data.append({
+                            'timestamp': int(row[0]),
+                            'open': float(row[1]),
+                            'high': float(row[2]),
+                            'low': float(row[3]),
+                            'close': float(row[4]),
+                            'volume': vol,
+                            'taker_buy_vol': None # Real Taker Vol info not in OHLCV, passing None to avoid corrupting CVD
+                        })
+                    df = pd.DataFrame(data)
+                    fetch_success = True
+                    is_cvd_estimated = True
             
             if not fetch_success:
                 st.error(f"Symbol {symbol} not found on Binance or Bybit.")
@@ -175,8 +219,49 @@ class DataFeed:
 
             # --- 2. FETCH OPEN INTEREST ---
             
+            # Helper to fetch from Coinalyze
+            def fetch_coinalyze_oi(symbol_suffix):
+                if not _self.coinalyze_api_key: return None
+                try:
+                    # Mapping timeframe to Coinalyze interval
+                    interval_map = {
+                        '1m': '1minute', '5m': '5minute', '15m': '15minute',
+                        '30m': '30minute', '1h': '1hour', '2h': '2hour',
+                        '4h': '4hour', '6h': '6hour', '12h': '12hour', '1d': 'daily'
+                    }
+                    interval_str = interval_map.get(timeframe, '15minute')
+                    
+                    # Convert 'BTC/USDT:USDT' to Coinalyze format (e.g. 'BTCUSDT_PERP')
+                    base = symbol.split('/')[0]
+                    quote = symbol.split('/')[1].split(':')[0]
+                    coinalyze_symbol = f"{base}{quote}_PERP.{symbol_suffix}"
+                    
+                    url = f"https://api.coinalyze.net/v1/open-interest-history"
+                    params = {'symbols': coinalyze_symbol, 'interval': interval_str}
+                    headers = {'api_key': _self.coinalyze_api_key}
+                    
+                    res = requests.get(url, params=params, headers=headers, timeout=5)
+                    if res.status_code == 200:
+                        data = res.json()
+                        if data and len(data) > 0 and 'history' in data[0]:
+                            oi_history = data[0]['history']
+                            oi_df = pd.DataFrame(oi_history)
+                            # Coinalyze timestamp is in seconds
+                            oi_df['timestamp'] = pd.to_datetime(oi_df['t'], unit='s')
+                            oi_df.rename(columns={'v': 'oi_value'}, inplace=True)
+                            return oi_df[['timestamp', 'oi_value']]
+                except Exception as e:
+                    print(f"Coinalyze OI fetch failed: {e}")
+                return None
+
             # Binance OI
-            if in_binance:
+            coinalyze_binance_oi = fetch_coinalyze_oi('A') if in_binance else None
+            
+            if coinalyze_binance_oi is not None and not coinalyze_binance_oi.empty:
+                coinalyze_binance_oi.rename(columns={'oi_value': 'oi'}, inplace=True)
+                df = pd.merge(df, coinalyze_binance_oi, on='timestamp', how='left')
+                df['oi'] = df['oi'].ffill()
+            elif in_binance:
                 try:
                     oi_data = _self.exchange.fetch_open_interest_history(symbol, timeframe, limit=limit)
                     oi_df = pd.DataFrame(oi_data)
@@ -188,10 +273,16 @@ class DataFeed:
                 except:
                     df['oi'] = 0
             else:
-                df['oi'] = 0 # No Binance OI
+                df['oi'] = 0
 
-            # Bybit OI
-            if in_bybit:
+            # Bybit OI (Coinalyze Bybit is .3 generally, but fallback to CCXT is fine)
+            coinalyze_bybit_oi = fetch_coinalyze_oi('3') if in_bybit else None
+            
+            if coinalyze_bybit_oi is not None and not coinalyze_bybit_oi.empty:
+                coinalyze_bybit_oi.rename(columns={'oi_value': 'oi_bybit'}, inplace=True)
+                df = pd.merge(df, coinalyze_bybit_oi, on='timestamp', how='left')
+                df['oi_bybit'] = df['oi_bybit'].ffill()
+            elif in_bybit:
                 try:
                     oi_bybit_data = _self.bybit.fetch_open_interest_history(bybit_symbol, timeframe, limit=limit)
                     oi_bybit_df = pd.DataFrame(oi_bybit_data)
@@ -207,17 +298,77 @@ class DataFeed:
                 df['oi_bybit'] = 0
 
             # --- 3. FETCH FUNDING RATES ---
+            def detect_funding_interval(funding_data, exchange_name):
+                """Detect funding interval from API response"""
+                if not funding_data:
+                    return 'N/A'
+                
+                try:
+                    # Method 1: Check CCXT normalized 'interval' field (top-level)
+                    if 'interval' in funding_data and funding_data['interval']:
+                        interval_ms = funding_data['interval']
+                        if isinstance(interval_ms, (int, float)):
+                            hours = interval_ms / (1000 * 60 * 60)
+                            if hours <= 1.5:
+                                return '1h'
+                            elif hours <= 4.5:
+                                return '4h'
+                            elif hours <= 8.5:
+                                return '8h'
+                            else:
+                                return f'{int(hours)}h'
+                    
+                    # Method 2: Check exchange-specific fields in info
+                    if 'info' in funding_data:
+                        info = funding_data['info']
+                        
+                        # ByBit: fundingIntervalHour
+                        if 'fundingIntervalHour' in info:
+                            hours = int(info['fundingIntervalHour'])
+                            return f'{hours}h'
+                        
+                        # Binance: fundingIntervalHours (if present)
+                        if 'fundingIntervalHours' in info:
+                            hours = int(info['fundingIntervalHours'])
+                            return f'{hours}h'
+                    
+                    # Method 3: Calculate from next funding timestamp (fallback)
+                    if 'fundingTimestamp' in funding_data and funding_data['fundingTimestamp']:
+                        import datetime
+                        next_funding = funding_data['fundingTimestamp']
+                        current_time = datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000
+                        diff_ms = next_funding - current_time
+                        
+                        if diff_ms > 0:
+                            diff_hours = diff_ms / (1000 * 60 * 60)
+                            # Round to nearest standard interval
+                            if diff_hours <= 1.5:
+                                return '1h'
+                            elif diff_hours <= 4.5:
+                                return '4h'
+                            elif diff_hours <= 8.5:
+                                return '8h'
+                            else:
+                                return f'{int(round(diff_hours))}h'
+                except Exception as e:
+                    print(f"Error detecting funding interval for {exchange_name}: {e}")
+                
+                # Default
+                return '8h'
+            
             if in_binance:
                 try:
                     funding_binance = _self.exchange.fetch_funding_rate(symbol)
-                except:
-                    pass
+                    funding_binance['fundingInterval'] = detect_funding_interval(funding_binance, 'binance')
+                except Exception as e:
+                    print(f"Binance funding fetch error: {e}")
             
             if in_bybit:
                 try:
                     funding_bybit = _self.bybit.fetch_funding_rate(bybit_symbol)
-                except:
-                    pass
+                    funding_bybit['fundingInterval'] = detect_funding_interval(funding_bybit, 'bybit')
+                except Exception as e:
+                    print(f"Bybit funding fetch error: {e}")
 
             return df, {"binance": funding_binance, "bybit": funding_bybit}
 

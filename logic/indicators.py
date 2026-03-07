@@ -6,37 +6,45 @@ class QuantLogic:
     @staticmethod
     def calculate_vwap(df):
         """Daily Anchored VWAP (Resets every day)"""
+        if df.empty: return df
         df['date'] = df['timestamp'].dt.date
         
         def calc_vwap_group(group):
             v = group['volume']
             tp = (group['high'] + group['low'] + group['close']) / 3
-            return (tp * v).cumsum() / v.cumsum()
+            # Ensure it returns a Series with the original index
+            result = (tp * v).cumsum() / v.cumsum()
+            return result
             
-        df['vwap'] = df.groupby('date', group_keys=False).apply(calc_vwap_group)
+        # Fixed: Added include_groups=False to suppress FutureWarning
+        vwap_series = df.groupby('date', group_keys=False).apply(calc_vwap_group, include_groups=False)
+        # Check if pandas returned a DataFrame inappropriately and extract the single column/series
+        if isinstance(vwap_series, pd.DataFrame):
+             # Try to get the first column
+             vwap_series = vwap_series.iloc[:, 0]
+        
+        df['vwap'] = vwap_series.values if hasattr(vwap_series, 'values') else vwap_series
         return df
 
     @staticmethod
     def calculate_cvd(df):
         """
-        Calculates Precise Cumulative Volume Delta (CVD) anchored to the daily session.
-        If Taker Data is missing, CVD returns None.
+        Calculates Cumulative Volume Delta (CVD) without daily reset.
+        For scalping, intraday momentum must persist across session boundaries.
         """
+        if df.empty: return df
+        
         if df['taker_buy_vol'].isnull().all():
             df['cvd'] = 0
+            df['delta'] = 0
             return df
 
-        df['taker_buy_vol'] = df['taker_buy_vol'].fillna(df['volume'] * 0.5) # Fallback to 50% only if sporadic missing data, but base logic prevents this.
+        df['taker_buy_vol'] = df['taker_buy_vol'].fillna(df['volume'] * 0.5)
         df['taker_sell_vol'] = df['volume'] - df['taker_buy_vol']
         df['delta'] = df['taker_buy_vol'] - df['taker_sell_vol']
         
-        # Session Anchored CVD (Reset at 00:00 UTC)
-        df['date'] = df['timestamp'].dt.date
-        
-        def calc_cvd_group(group):
-            return group['delta'].cumsum()
-            
-        df['cvd'] = df.groupby('date', group_keys=False).apply(calc_cvd_group)
+        # Continuous CVD (No Reset) - Critical for scalping momentum
+        df['cvd'] = df['delta'].cumsum()
         return df
 
     @staticmethod
@@ -60,32 +68,77 @@ class QuantLogic:
         if 'atr' not in df.columns:
             df = QuantLogic.calculate_atr(df)
             
-        # Calculate changes/deltas
-        df['price_change'] = df['close'] - df['open']
+        # Calculate changes/deltas - FIXED: Use close-to-close momentum
+        df['price_change'] = df['close'].diff()
         df['oi_change_pct'] = df['oi'].pct_change() * 100
         
-        # Dynamic Threshold (0.5 * ATR for trend detection, prevents choppy regime switches)
-        df['bull_trend'] = df['price_change'] > (0.5 * df['atr'])
-        df['bear_trend'] = df['price_change'] < -(0.5 * df['atr'])
+        # Fill NaN values
+        df['price_change'] = df['price_change'].fillna(0)
+        df['oi_change_pct'] = df['oi_change_pct'].fillna(0)
         
-        # OI Threshold (At least 0.2% change to be considered institutional involvement)
-        oi_thresh = 0.2 
+        # Check if OI data is valid
+        oi_is_valid = df['oi'].sum() > 0 and not df['oi'].isnull().all()
+        
+        # Adaptive ATR threshold based on recent volatility
+        # Higher volatility = higher threshold to avoid false signals
+        volatility_ratio = df['atr'].rolling(10).std() / df['atr'].rolling(10).mean()
+        volatility_ratio = volatility_ratio.fillna(1.0)
+        adaptive_atr_multiplier = 0.15 + (volatility_ratio * 0.1)
+        adaptive_atr_multiplier = adaptive_atr_multiplier.clip(0.1, 0.3)
+        
+        df['bull_trend'] = df['price_change'] > (adaptive_atr_multiplier * df['atr'])
+        df['bear_trend'] = df['price_change'] < -(adaptive_atr_multiplier * df['atr'])
+        
+        # Dynamic OI Threshold based on recent OI volatility
+        if oi_is_valid:
+            oi_std = df['oi_change_pct'].rolling(20).std()
+            oi_thresh = (oi_std * 1.5).fillna(0.05).clip(0.02, 0.15)
+        else:
+            oi_thresh = 0.0
         
         if 'delta' not in df.columns:
             df['delta'] = 0
+        
+        # Delta magnitude threshold - FIXED: Consider delta strength
+        delta_std = df['delta'].rolling(20).std().fillna(1)
+        delta_threshold = delta_std * 0.3
+        df['strong_positive_delta'] = df['delta'] > delta_threshold
+        df['strong_negative_delta'] = df['delta'] < -delta_threshold
 
+        # If OI data is invalid, use simple price-based regime
+        if not oi_is_valid:
+            simple_conditions = [
+                (df['bull_trend']) & (df['strong_positive_delta']),
+                (df['bull_trend']) & (~df['strong_positive_delta']),
+                (df['bear_trend']) & (df['strong_negative_delta']),
+                (df['bear_trend']) & (~df['strong_negative_delta']),
+                (df['price_change'] > 0) & (~df['bull_trend']),
+                (df['price_change'] < 0) & (~df['bear_trend'])
+            ]
+            simple_choices = [
+                'Strong Long Buildup 🟢🔥',
+                'Absorption Long Buildup 🟢🛡️',
+                'Strong Short Buildup 🔴🔥',
+                'Absorption Short Buildup 🔴🛡️',
+                'Minor Long Bias 🟢',
+                'Minor Short Bias 🔴'
+            ]
+            df['regime'] = np.select(simple_conditions, simple_choices, default='Neutral')
+            return df
+        
+        # Use dynamic thresholds and magnitude-aware delta
         conditions = [
-            (df['bull_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['delta'] > 0), # Strong Long Buildup
-            (df['bull_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['delta'] <= 0), # Absorption Long Buildup
+            (df['bull_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['strong_positive_delta']), # Strong Long Buildup
+            (df['bull_trend']) & (df['oi_change_pct'] > oi_thresh) & (~df['strong_positive_delta']), # Absorption Long Buildup
             
-            (df['bull_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['delta'] > 0), # Short Covering (Aggressive)
-            (df['bull_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['delta'] <= 0), # Short Covering (Passive)
+            (df['bull_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['strong_positive_delta']), # Short Covering (Aggressive)
+            (df['bull_trend']) & (df['oi_change_pct'] < -oi_thresh) & (~df['strong_positive_delta']), # Short Covering (Passive)
             
-            (df['bear_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['delta'] < 0), # Strong Short Buildup
-            (df['bear_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['delta'] >= 0), # Absorption Short Buildup
+            (df['bear_trend']) & (df['oi_change_pct'] > oi_thresh) & (df['strong_negative_delta']), # Strong Short Buildup
+            (df['bear_trend']) & (df['oi_change_pct'] > oi_thresh) & (~df['strong_negative_delta']), # Absorption Short Buildup
             
-            (df['bear_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['delta'] < 0), # Long Liquidation (Aggressive)
-            (df['bear_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['delta'] >= 0)  # Long Liquidation (Passive)
+            (df['bear_trend']) & (df['oi_change_pct'] < -oi_thresh) & (df['strong_negative_delta']), # Long Liquidation (Aggressive)
+            (df['bear_trend']) & (df['oi_change_pct'] < -oi_thresh) & (~df['strong_negative_delta'])  # Long Liquidation (Passive)
         ]
         
         choices = [
@@ -99,34 +152,46 @@ class QuantLogic:
             'Passive Long Liquidation 🩸🛡️'
         ]
         
-        df['regime'] = np.select(conditions, choices, default='Neutral')
+        # Improved generic conditions for minor movements
+        generic_conditions = [
+            (df['price_change'] > 0) & (~df['bull_trend']) & (df['oi_change_pct'] > oi_thresh),
+            (df['price_change'] > 0) & (~df['bull_trend']) & (df['oi_change_pct'] <= oi_thresh),
+            (df['price_change'] < 0) & (~df['bear_trend']) & (df['oi_change_pct'] > oi_thresh),
+            (df['price_change'] < 0) & (~df['bear_trend']) & (df['oi_change_pct'] <= oi_thresh),
+        ]
+        generic_choices = [
+            'Minor Long Bias 🟢',
+            'Minor Long Bias 🟢',
+            'Minor Short Bias 🔴',
+            'Minor Short Bias 🔴'
+        ]
+        
+        df['regime'] = np.select(conditions, choices, default=np.select(generic_conditions, generic_choices, default='Neutral'))
         return df
 
     @staticmethod
     def detect_sfp(df):
         """
-        Real Liquidity Hunt Detector (SFP).
-        Calculates Prior Day High/Low (PDH/PDL) and detects sweeps.
+        Session-Based Liquidity Hunt Detector (SFP).
+        For scalping, uses recent session highs/lows (last 8-12 hours) instead of daily.
         """
         df['sfp_signal'] = None
         
-        # Group by day to find daily highs and lows
-        df['date'] = df['timestamp'].dt.date
-        daily_stats = df.groupby('date').agg({'high': 'max', 'low': 'min'}).reset_index()
-        daily_stats['PDH'] = daily_stats['high'].shift(1)  # Previous Day High
-        daily_stats['PDL'] = daily_stats['low'].shift(1)   # Previous Day Low
+        # Calculate rolling session highs/lows (8-hour window for 15m = 32 candles)
+        # This captures Asian/London/NY session patterns
+        window = min(32, len(df) // 3)  # Adaptive to data length
         
-        # Merge back to original dataframe on date
-        df = df.merge(daily_stats[['date', 'PDH', 'PDL']], on='date', how='left')
+        df['session_high'] = df['high'].rolling(window=window, min_periods=1).max().shift(1)
+        df['session_low'] = df['low'].rolling(window=window, min_periods=1).min().shift(1)
         
-        # Bullish SFP: Price wicks below PDL but closes above it
-        bull_sfp = (df['low'] < df['PDL']) & (df['close'] > df['PDL'])
+        # Bullish SFP: Price wicks below session low but closes above it
+        bull_sfp = (df['low'] < df['session_low']) & (df['close'] > df['session_low'])
         
-        # Bearish SFP: Price wicks above PDH but closes below it
-        bear_sfp = (df['high'] > df['PDH']) & (df['close'] < df['PDH'])
+        # Bearish SFP: Price wicks above session high but closes below it
+        bear_sfp = (df['high'] > df['session_high']) & (df['close'] < df['session_high'])
         
-        df.loc[bull_sfp, 'sfp_signal'] = 'Bullish SFP (PDL Sweep) 🚀'
-        df.loc[bear_sfp, 'sfp_signal'] = 'Bearish SFP (PDH Sweep) 🔻'
+        df.loc[bull_sfp, 'sfp_signal'] = 'Bullish SFP 🚀'
+        df.loc[bear_sfp, 'sfp_signal'] = 'Bearish SFP 🔻'
         
         return df
 
@@ -143,25 +208,25 @@ class QuantLogic:
 
     @staticmethod
     def calculate_mfi(df, period=14):
-        """Money Flow Index (Volume-weighted RSI)"""
+        """Money Flow Index (Volume-weighted RSI) - FIXED: Use close price diff"""
         typical_price = (df['high'] + df['low'] + df['close']) / 3
         money_flow = typical_price * df['volume']
         
-        # Positive/Negative Money Flow
-        # We need to compare typical price with previous typical price
-        tp_diff = typical_price.diff()
+        # FIXED: Compare close price, not typical price
+        price_diff = df['close'].diff()
         
         pos_flow = pd.Series(0.0, index=df.index)
         neg_flow = pd.Series(0.0, index=df.index)
         
-        pos_flow[tp_diff > 0] = money_flow[tp_diff > 0]
-        neg_flow[tp_diff < 0] = money_flow[tp_diff < 0]
+        pos_flow[price_diff > 0] = money_flow[price_diff > 0]
+        neg_flow[price_diff < 0] = money_flow[price_diff < 0]
         
         # Rolling sums
         pos_mf = pos_flow.rolling(window=period).sum()
         neg_mf = neg_flow.rolling(window=period).sum()
         
-        mfi_ratio = pos_mf / neg_mf
+        # Prevent division by zero
+        mfi_ratio = pos_mf / neg_mf.replace(0, 0.0001)
         df['mfi'] = 100 - (100 / (1 + mfi_ratio))
         return df
 
@@ -173,12 +238,16 @@ class QuantLogic:
 
     @staticmethod
     def calculate_cmf(df, period=20):
-        """Chaikin Money Flow"""
+        """Chaikin Money Flow - FIXED: Division by zero protection"""
         # Money Flow Multiplier = [(Close - Low) - (High - Close)] / (High - Low)
-        mf_multiplier = ((df['close'] - df['low']) - (df['high'] - df['close'])) / (df['high'] - df['low'])
+        range_val = df['high'] - df['low']
+        range_val = range_val.replace(0, 0.0001)  # Prevent division by zero
+        
+        mf_multiplier = ((df['close'] - df['low']) - (df['high'] - df['close'])) / range_val
         mf_volume = mf_multiplier * df['volume']
         
-        df['cmf'] = mf_volume.rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
+        volume_sum = df['volume'].rolling(window=period).sum().replace(0, 1)  # Prevent division by zero
+        df['cmf'] = mf_volume.rolling(window=period).sum() / volume_sum
         return df
 
     @staticmethod
@@ -304,6 +373,37 @@ class QuantLogic:
         return df
 
     @staticmethod
+    def add_funding_pressure(df, funding_rate_binance=0, funding_rate_bybit=0):
+        """
+        Adds funding rate pressure analysis to regime detection.
+        Critical for scalping: Extreme funding = squeeze potential.
+        """
+        # Average funding rate from both exchanges
+        avg_funding = (funding_rate_binance + funding_rate_bybit) / 2
+        
+        # Funding pressure zones
+        df['funding_pressure'] = 'Neutral'
+        
+        if avg_funding > 0.01:  # 1% = Very high long funding
+            df['funding_pressure'] = 'Long Squeeze Risk 🔴'
+        elif avg_funding > 0.005:  # 0.5% = High long funding
+            df['funding_pressure'] = 'High Long Funding ⚠️'
+        elif avg_funding < -0.01:  # -1% = Very high short funding
+            df['funding_pressure'] = 'Short Squeeze Risk 🟢'
+        elif avg_funding < -0.005:  # -0.5% = High short funding
+            df['funding_pressure'] = 'High Short Funding 💎'
+        
+        return df
+    
+    @staticmethod
+    def calculate_ema_trend(df, fast_period=21, slow_period=50):
+        """Calculate EMA-based trend for proper trend detection"""
+        df['ema_fast'] = df['close'].ewm(span=fast_period, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=slow_period, adjust=False).mean()
+        df['ema_trend'] = df['ema_fast'] > df['ema_slow']
+        return df
+
+    @staticmethod
     def detect_divergences(df, window=5):
         """
         Detects Regular Bullish/Bearish Divergences for RSI, MFI, CMF, MACD.
@@ -379,23 +479,50 @@ class QuantLogic:
     @staticmethod
     def generate_technical_summary(df):
         """
-        Generates a professional regime-filtered technical analysis summary.
-        Oscillators are ignored if they contradict the main trend (VWAP).
+        Professional scalping-focused technical analysis.
+        FIXED: Uses EMA for trend, VWAP for support/resistance.
         """
         last = df.iloc[-1]
         signals = []
         score = 0
         
-        # 1. Primary Trend Filter (Anchor)
-        is_bull_trend = last['close'] > last['vwap']
-        is_bear_trend = last['close'] < last['vwap']
+        # Ensure EMA trend is calculated
+        if 'ema_trend' not in df.columns:
+            df = QuantLogic.calculate_ema_trend(df)
+            last = df.iloc[-1]
+        
+        # 1. Primary Trend Filter (EMA-based, not VWAP)
+        is_bull_trend = last['ema_trend']
+        is_bear_trend = not last['ema_trend']
         
         if is_bull_trend:
-            signals.append("Price > VWAP (Primary Bull Trend)")
+            signals.append("EMA 21 > EMA 50 (Bull Trend)")
             score += 2
         else:
-            signals.append("Price < VWAP (Primary Bear Trend)")
+            signals.append("EMA 21 < EMA 50 (Bear Trend)")
             score -= 2
+        
+        # 1b. VWAP as Support/Resistance (not trend)
+        if last['close'] > last['vwap']:
+            if is_bull_trend:
+                signals.append("Price > VWAP (Above Support)")
+                score += 1
+        else:
+            if is_bear_trend:
+                signals.append("Price < VWAP (Below Resistance)")
+                score -= 1
+        
+        # 1c. Funding Pressure (if available)
+        if 'funding_pressure' in df.columns:
+            funding_status = last['funding_pressure']
+            if 'Short Squeeze Risk' in funding_status:
+                signals.append(f"{funding_status}")
+                score += 2
+            elif 'Long Squeeze Risk' in funding_status:
+                signals.append(f"{funding_status}")
+                score -= 2
+            elif funding_status != 'Neutral':
+                signals.append(f"{funding_status}")
             
         # 0. Divergence Check (Only trend-aligned divergences count)
         div_signals = QuantLogic.detect_divergences(df)
